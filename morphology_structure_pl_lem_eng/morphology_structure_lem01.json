@@ -1,0 +1,338 @@
+{
+  "generated_at_utc": "2025-02-12T00:00:00Z",
+  "source_tables": {
+    "terms": {
+      "columns_of_interest": [
+        "base_form",
+        "grammatical_part_of_speech",
+        "grammatical_gender",
+        "grammatical_declension",
+        "grammatical_conjugation",
+        "grammatical_aspect",
+        "grammatical_stem",
+        "grammatical_numeral_type",
+        "grammatical_pronoun_type",
+        "grammatical_adverb_type",
+        "grammatical_aspect_pair"
+      ]
+    },
+    "term_word_associations": {
+      "columns_of_interest": [
+        "word",
+        "grammatical_case",
+        "grammatical_number",
+        "grammatical_gender",
+        "grammatical_person",
+        "grammatical_mood",
+        "grammatical_tense",
+        "grammatical_comparison"
+      ]
+    }
+  },
+    "enums": {
+        "grammatical_case": {
+            "0": "называючый",
+            "1": "рождаючый",
+            "2": "даючый",
+            "3": "видячый",
+            "4": "творячый",
+            "5": "місцевый",
+            "6": "кличучый"
+        },
+        "grammatical_number": {
+            "0": "єднотне чысло",
+            "1": "множне чысло"
+        },
+        "grammatical_person": {
+            "0": "1. особа єднотного чысла",
+            "1": "2. особа єднотного чысла",
+            "2": "3. особа єднотного чысла (мужскій рід)",
+            "3": "3. особа єднотного чысла (женскій рід)",
+            "4": "3. особа єднотного чысла (середній рід)",
+            "5": "1. особа множного чысла",
+            "6": "2. особа множного чысла",
+            "7": "3. особа множного чысла"
+        },
+        "grammatical_mood": {
+            "0": "ознаємляючый спосіб",
+            "1": "условный спосіб",
+            "2": "розказовый спосіб"
+        },
+        "grammatical_tense": {
+            "0": "теперішній час",
+            "1": "минулый час",
+            "2": "будучый час"
+        },
+        "grammatical_gender": {
+            "0": "мужскій рід",
+            "1": "женскій рід",
+            "2": "середній рід",
+            "3": "спільный рід / не односит ся",
+      "4": "pluralia tantum"
+    },
+    "noun_declension": {
+      "0": "I одміна – мягка тема (формы на -я, -ія, -ня, -ия)",
+      "1": "I одміна – тверда тема (женского рода на -a)",
+      "2": "II одміна – мужского і середнього рода, тема ся кінчыт на согласный",
+      "3": "III одміна – женского рода, тема ся кінчыт на согласный",
+      "4": "IV одміна – середнього рода на -я / -мя",
+      "5": "Одчасословны назывникы (-ня, -тя)",
+      "6": "Pluralia tantum",
+      "7": "Неодмінны назывникы",
+      "8": "Назывникы мужского рода на -a / -я"
+    },
+    "verb_aspect": {
+      "0": "завершеный",
+      "1": "незавершеный",
+      "2": "двовидовый"
+    },
+    "verb_conjugation": {
+      "0": "I одміна (-ати/-яти/-увати)",
+      "1": "II одміна (-ити/-ыти)",
+      "2": "III одміна (-ати з альтернацийом в темі)",
+      "3": "нереґулярна одміна"
+    },
+    "adjective_stem": {
+      "0": "мягка тема",
+      "1": "тверда тема",
+      "2": "тема на к/ґ/г/х"
+    },
+    "grammatical_comparison": {
+      "0": "основна ступін",
+      "1": "высша ступін",
+      "2": "найвысша ступін"
+    },
+    "numeral_type": {
+      "0": "кількістный / дробовый чысловник",
+      "1": "порядковый чысловник",
+      "2": "громадный чысловник"
+    },
+    "pronoun_type": {
+      "0": "особовы і вказуючы",
+      "1": "вертаны",
+      "2": "присвійны",
+      "3": "односны",
+      "4": "звідуючы (місце, час, кількіст)",
+      "5": "основны невызначены",
+      "6": "вызначены (вшыткы, каждый)",
+      "7": "одрікаючы (нихто, ниякій)",
+      "8": "невызначены з частком (абы-, буд-)"
+    },
+    "adverb_type": {
+      "0": "присловникы способу",
+      "1": "присловникы ціли / причыны",
+      "2": "присловникы часу",
+      "3": "присловникы міры і ступени",
+      "4": "присловникы місця",
+      "5": "модальны присловникы"
+    }
+  },
+  "parts_of_speech": {
+    "0": {
+      "label": "назывник",
+      "term_attributes": [
+        {
+          "column": "grammatical_gender",
+          "label": "Рід",
+          "enum": "grammatical_gender"
+        },
+        {
+          "column": "grammatical_declension",
+          "label": "Одміна",
+          "enum": "noun_declension"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        },
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        }
+      ]
+    },
+    "1": {
+      "label": "часослово",
+      "term_attributes": [
+        {
+          "column": "grammatical_aspect",
+          "label": "Вид",
+          "enum": "verb_aspect"
+        },
+        {
+          "column": "grammatical_conjugation",
+          "label": "Одміна",
+          "enum": "verb_conjugation"
+        },
+        {
+          "column": "grammatical_aspect_pair",
+          "label": "Видова пара",
+          "type": "string"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_mood",
+          "enum": "grammatical_mood"
+        },
+        {
+          "attribute": "grammatical_tense",
+          "enum": "grammatical_tense"
+        },
+        {
+          "attribute": "grammatical_person",
+          "enum": "grammatical_person"
+        }
+      ]
+    },
+    "2": {
+      "label": "придавник",
+      "term_attributes": [
+        {
+          "column": "grammatical_stem",
+          "label": "Тип темы",
+          "enum": "adjective_stem"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_comparison",
+          "enum": "grammatical_comparison"
+        },
+        {
+          "attribute": "grammatical_gender",
+          "enum": "grammatical_gender"
+        },
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        },
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "3": {
+      "label": "порядковый чысловник",
+      "term_attributes": [
+        {
+          "column": "grammatical_numeral_type",
+          "label": "Тып чысловника",
+          "enum": "numeral_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        },
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "4": {
+      "label": "одмінный місценазывник (чысло + одмінок)",
+      "term_attributes": [
+        {
+          "column": "grammatical_pronoun_type",
+          "label": "Тип місценазывника",
+          "enum": "pronoun_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        },
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "5": {
+      "label": "місценазывник (одмінок)",
+      "term_attributes": [
+        {
+          "column": "grammatical_pronoun_type",
+          "label": "Тип місценазывника",
+          "enum": "pronoun_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "6": {
+      "label": "присловник",
+      "term_attributes": [
+        {
+          "column": "grammatical_adverb_type",
+          "label": "Тип присловника",
+          "enum": "adverb_type"
+        }
+      ],
+      "form_dimensions": []
+    },
+    "7": {
+      "label": "присловник, што має ступени порівнаня",
+      "term_attributes": [
+        {
+          "column": "grammatical_adverb_type",
+          "label": "Тип присловника",
+          "enum": "adverb_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_comparison",
+          "enum": "grammatical_comparison"
+        }
+      ]
+    },
+    "8": {
+      "label": "частка",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "9": {
+      "label": "злучник",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "10": {
+      "label": "выкричник",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "11": {
+      "label": "приназывник",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "12": {
+      "label": "кількістный чысловник",
+      "term_attributes": [
+        {
+          "column": "grammatical_numeral_type",
+          "label": "Тип чысловника",
+          "enum": "numeral_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    }
+  }
+}

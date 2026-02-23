@@ -1,0 +1,338 @@
+{
+  "generated_at_utc": "2025-02-12T00:00:00Z",
+  "source_tables": {
+    "terms": {
+      "columns_of_interest": [
+        "base_form",
+        "grammatical_part_of_speech",
+        "grammatical_gender",
+        "grammatical_declension",
+        "grammatical_conjugation",
+        "grammatical_aspect",
+        "grammatical_stem",
+        "grammatical_numeral_type",
+        "grammatical_pronoun_type",
+        "grammatical_adverb_type",
+        "grammatical_aspect_pair"
+      ]
+    },
+    "term_word_associations": {
+      "columns_of_interest": [
+        "word",
+        "grammatical_case",
+        "grammatical_number",
+        "grammatical_gender",
+        "grammatical_person",
+        "grammatical_mood",
+        "grammatical_tense",
+        "grammatical_comparison"
+      ]
+    }
+  },
+    "enums": {
+        "grammatical_case": {
+            "0": "mianownik",
+            "1": "dopełniacz",
+            "2": "celownik",
+            "3": "biernik",
+            "4": "narzędnik",
+            "5": "miejscownik",
+            "6": "wołacz"
+        },
+        "grammatical_number": {
+            "0": "liczba pojedyncza",
+            "1": "liczba mnoga"
+        },
+        "grammatical_person": {
+            "0": "1. osoba liczby pojedynczej",
+            "1": "2. osoba liczby pojedynczej",
+            "2": "3. osoba liczby pojedynczej (męski)",
+            "3": "3. osoba liczby pojedynczej (żeński)",
+            "4": "3. osoba liczby pojedynczej (nijaki)",
+            "5": "1. osoba liczby mnogiej",
+            "6": "2. osoba liczby mnogiej",
+            "7": "3. osoba liczby mnogiej"
+        },
+        "grammatical_mood": {
+            "0": "tryb oznajmujący",
+            "1": "tryb przypuszczający",
+            "2": "tryb rozkazujący"
+        },
+        "grammatical_tense": {
+            "0": "czas teraźniejszy",
+            "1": "czas przeszły",
+            "2": "czas przyszły"
+        },
+        "grammatical_gender": {
+            "0": "rodzaj męski",
+            "1": "rodzaj żeński",
+            "2": "rodzaj nijaki",
+            "3": "rodzaj wspólny / nie dotyczy",
+      "4": "pluralia tantum"
+    },
+    "noun_declension": {
+      "0": "I deklinacja – temat miękki (formy na -я, -ія, -ня, -ия)",
+      "1": "I deklinacja – temat twardy (żeńskie na -a)",
+      "2": "II deklinacja – męskie i nijakie tematy spółgłoskowe",
+      "3": "III deklinacja – żeńskie zakończone spółgłoską",
+      "4": "IV deklinacja – nijakie na -я / -мя",
+      "5": "Rzeczowniki odczasownikowe (-ня, -тя)",
+      "6": "Pluralia tantum",
+      "7": "Rzeczowniki nieodmienne",
+      "8": "Rzeczowniki męskoosobowe na -a / -я"
+    },
+    "verb_aspect": {
+      "0": "dokonany",
+      "1": "niedokonany",
+      "2": "dwuaspektowy"
+    },
+    "verb_conjugation": {
+      "0": "koniugacja I (-ати/-яти/-увати)",
+      "1": "koniugacja II (-ити/-ыти)",
+      "2": "koniugacja III (-ати z obocznością tematyczną)",
+      "3": "koniugacja nieregularna"
+    },
+    "adjective_stem": {
+      "0": "temat twardy",
+      "1": "temat miękki",
+      "2": "temat na k/g/h/ch"
+    },
+    "grammatical_comparison": {
+      "0": "stopień równy",
+      "1": "stopień wyższy",
+      "2": "stopień najwyższy"
+    },
+    "numeral_type": {
+      "0": "liczebnik główny / ułamkowy",
+      "1": "liczebnik porządkowy",
+      "2": "liczebnik zbiorowy"
+    },
+    "pronoun_type": {
+      "0": "osobowe i wskazujące",
+      "1": "zwrotne",
+      "2": "dzierżawcze",
+      "3": "względne",
+      "4": "pytające (miejsce, czas, ilość)",
+      "5": "nieokreślone bazowe",
+      "6": "upowszechniający (wszyscy, każdy)",
+      "7": "zaprzeczające (żaden, nikt)",
+      "8": "nieokreślone z partykułą (абы-, буд-)"
+    },
+    "adverb_type": {
+      "0": "przysłówki sposobu",
+      "1": "przysłówki celu / przyczyny",
+      "2": "przysłówki czasu",
+      "3": "przysłówki miary i stopnia",
+      "4": "przysłówki miejsca",
+      "5": "przysłówki modalne"
+    }
+  },
+  "parts_of_speech": {
+    "0": {
+      "label": "rzeczownik",
+      "term_attributes": [
+        {
+          "column": "grammatical_gender",
+          "label": "Rodzaj",
+          "enum": "grammatical_gender"
+        },
+        {
+          "column": "grammatical_declension",
+          "label": "Deklinacja",
+          "enum": "noun_declension"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        },
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        }
+      ]
+    },
+    "1": {
+      "label": "czasownik",
+      "term_attributes": [
+        {
+          "column": "grammatical_aspect",
+          "label": "Aspekt",
+          "enum": "verb_aspect"
+        },
+        {
+          "column": "grammatical_conjugation",
+          "label": "Koniugacja",
+          "enum": "verb_conjugation"
+        },
+        {
+          "column": "grammatical_aspect_pair",
+          "label": "Para aspektowa",
+          "type": "string"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_mood",
+          "enum": "grammatical_mood"
+        },
+        {
+          "attribute": "grammatical_tense",
+          "enum": "grammatical_tense"
+        },
+        {
+          "attribute": "grammatical_person",
+          "enum": "grammatical_person"
+        }
+      ]
+    },
+    "2": {
+      "label": "przymiotnik",
+      "term_attributes": [
+        {
+          "column": "grammatical_stem",
+          "label": "Typ tematu",
+          "enum": "adjective_stem"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_comparison",
+          "enum": "grammatical_comparison"
+        },
+        {
+          "attribute": "grammatical_gender",
+          "enum": "grammatical_gender"
+        },
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        },
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "3": {
+      "label": "liczebnik porządkowy",
+      "term_attributes": [
+        {
+          "column": "grammatical_numeral_type",
+          "label": "Typ liczebnika",
+          "enum": "numeral_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        },
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "4": {
+      "label": "zaimek odmienny (liczba + przypadek)",
+      "term_attributes": [
+        {
+          "column": "grammatical_pronoun_type",
+          "label": "Typ zaimka",
+          "enum": "pronoun_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        },
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "5": {
+      "label": "zaimek (przypadek)",
+      "term_attributes": [
+        {
+          "column": "grammatical_pronoun_type",
+          "label": "Typ zaimka",
+          "enum": "pronoun_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "6": {
+      "label": "przysłówek",
+      "term_attributes": [
+        {
+          "column": "grammatical_adverb_type",
+          "label": "Typ przysłówka",
+          "enum": "adverb_type"
+        }
+      ],
+      "form_dimensions": []
+    },
+    "7": {
+      "label": "przysłówek stopniowalny",
+      "term_attributes": [
+        {
+          "column": "grammatical_adverb_type",
+          "label": "Typ przysłówka",
+          "enum": "adverb_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_comparison",
+          "enum": "grammatical_comparison"
+        }
+      ]
+    },
+    "8": {
+      "label": "partykuła",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "9": {
+      "label": "spójnik",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "10": {
+      "label": "wykrzyknik",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "11": {
+      "label": "przyimek",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "12": {
+      "label": "liczebnik główny",
+      "term_attributes": [
+        {
+          "column": "grammatical_numeral_type",
+          "label": "Typ liczebnika",
+          "enum": "numeral_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,338 @@
+{
+  "generated_at_utc": "2025-02-12T00:00:00Z",
+  "source_tables": {
+    "terms": {
+      "columns_of_interest": [
+        "base_form",
+        "grammatical_part_of_speech",
+        "grammatical_gender",
+        "grammatical_declension",
+        "grammatical_conjugation",
+        "grammatical_aspect",
+        "grammatical_stem",
+        "grammatical_numeral_type",
+        "grammatical_pronoun_type",
+        "grammatical_adverb_type",
+        "grammatical_aspect_pair"
+      ]
+    },
+    "term_word_associations": {
+      "columns_of_interest": [
+        "word",
+        "grammatical_case",
+        "grammatical_number",
+        "grammatical_gender",
+        "grammatical_person",
+        "grammatical_mood",
+        "grammatical_tense",
+        "grammatical_comparison"
+      ]
+    }
+  },
+    "enums": {
+        "grammatical_case": {
+            "0": "nominative",
+            "1": "genitive",
+            "2": "dative",
+            "3": "accusative",
+            "4": "instrumental",
+            "5": "locative",
+            "6": "vocative"
+        },
+        "grammatical_number": {
+            "0": "singular",
+            "1": "plural"
+        },
+        "grammatical_person": {
+            "0": "First-person singular",
+            "1": "Second-person singular",
+            "2": "Third-person masculine singular",
+            "3": "Third-person feminine singular",
+            "4": "Third-person neuter singular",
+            "5": "First-person plural",
+            "6": "Second-person plural",
+            "7": "Third-person plural"
+        },
+        "grammatical_mood": {
+            "0": "indicative mood",
+            "1": "subjunctive mood",
+            "2": "imperative mood"
+        },
+        "grammatical_tense": {
+            "0": "present tense",
+            "1": "past tense",
+            "2": "future tense"
+        },
+        "grammatical_gender": {
+            "0": "masculine",
+            "1": "feminine",
+            "2": "neuter",
+            "3": "common / not applicable",
+      "4": "pluralia tantum"
+    },
+    "noun_declension": {
+      "0": "I declension – soft stem (forms ending in -я, -ія, -ня, -ия)",
+      "1": "I declension – hard stem (feminine forms ending in -a)",
+      "2": "I declension – masculine and neuter consonant stems",
+      "3": "III declension – feminine ending in a consonant",
+      "4": "V declension – neuter ending in -я / -мя",
+      "5": "Verbal nouns (-ня, -тя)",
+      "6": "Pluralia tantum",
+      "7": "Uninflected nouns",
+      "8": "Masculine nouns ending in -a / -я"
+    },
+    "verb_aspect": {
+      "0": "perfective",
+      "1": "imperfective",
+      "2": "dual-aspect verb"
+    },
+    "verb_conjugation": {
+      "0": "conjugation I (-ати/-яти/-увати)",
+      "1": "conjugation II (-ити/-ыти)",
+      "2": "conjugation III (-ати with stem alternation)",
+      "3": "irregular conjugation"
+    },
+    "adjective_stem": {
+      "0": "hard stem",
+      "1": "soft stem",
+      "2": "k/g/h/ch stem"
+    },
+    "grammatical_comparison": {
+      "0": "positive degree",
+      "1": "comparative degree",
+      "2": "superlative degree"
+    },
+    "numeral_type": {
+      "0": "cardinal / fractional numeral",
+      "1": "ordinal numeral",
+      "2": "collective numeral"
+    },
+    "pronoun_type": {
+      "0": "personal and demonstrative",
+      "1": "reflexive",
+      "2": "possessive",
+      "3": "relative",
+      "4": "interrogative (place, time, quantity)",
+      "5": "basic indefinite",
+      "6": "universal (all, every)",
+      "7": "negative (none, nobody)",
+      "8": "indefinite with particle (абы-, буд-)"
+    },
+    "adverb_type": {
+      "0": "adverbs of manner",
+      "1": "adverbs of purpose / reason",
+      "2": "adverbs of time",
+      "3": "adverbs of degree and measure",
+      "4": "adverbs of place",
+      "5": "modal adverbs"
+    }
+  },
+  "parts_of_speech": {
+    "0": {
+      "label": "noun",
+      "term_attributes": [
+        {
+          "column": "grammatical_gender",
+          "label": "gender",
+          "enum": "grammatical_gender"
+        },
+        {
+          "column": "grammatical_declension",
+          "label": "Declension",
+          "enum": "noun_declension"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        },
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        }
+      ]
+    },
+    "1": {
+      "label": "verb",
+      "term_attributes": [
+        {
+          "column": "grammatical_aspect",
+          "label": "Aspect",
+          "enum": "verb_aspect"
+        },
+        {
+          "column": "grammatical_conjugation",
+          "label": "Conjugation",
+          "enum": "verb_conjugation"
+        },
+        {
+          "column": "grammatical_aspect_pair",
+          "label": "Aspectual pair",
+          "type": "string"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_mood",
+          "enum": "grammatical_mood"
+        },
+        {
+          "attribute": "grammatical_tense",
+          "enum": "grammatical_tense"
+        },
+        {
+          "attribute": "grammatical_person",
+          "enum": "grammatical_person"
+        }
+      ]
+    },
+    "2": {
+      "label": "adjective",
+      "term_attributes": [
+        {
+          "column": "grammatical_stem",
+          "label": "Stem type",
+          "enum": "adjective_stem"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_comparison",
+          "enum": "grammatical_comparison"
+        },
+        {
+          "attribute": "grammatical_gender",
+          "enum": "grammatical_gender"
+        },
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        },
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "3": {
+      "label": "ordinal numeral",
+      "term_attributes": [
+        {
+          "column": "grammatical_numeral_type",
+          "label": "Numeral type",
+          "enum": "numeral_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        },
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "4": {
+      "label": "declinable pronoun (number + case)",
+      "term_attributes": [
+        {
+          "column": "grammatical_pronoun_type",
+          "label": "Pronoun type",
+          "enum": "pronoun_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_number",
+          "enum": "grammatical_number"
+        },
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "5": {
+      "label": "pronoun (case)",
+      "term_attributes": [
+        {
+          "column": "grammatical_pronoun_type",
+          "label": "Pronoun type",
+          "enum": "pronoun_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    },
+    "6": {
+      "label": "adverb",
+      "term_attributes": [
+        {
+          "column": "grammatical_adverb_type",
+          "label": "Adverb type",
+          "enum": "adverb_type"
+        }
+      ],
+      "form_dimensions": []
+    },
+    "7": {
+      "label": "gradable adverb",
+      "term_attributes": [
+        {
+          "column": "grammatical_adverb_type",
+          "label": "Adverb type",
+          "enum": "adverb_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_comparison",
+          "enum": "grammatical_comparison"
+        }
+      ]
+    },
+    "8": {
+      "label": "particle",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "9": {
+      "label": "conjunction",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "10": {
+      "label": "interjection",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "11": {
+      "label": "preposition",
+      "term_attributes": [],
+      "form_dimensions": []
+    },
+    "12": {
+      "label": "cardinal numeral",
+      "term_attributes": [
+        {
+          "column": "grammatical_numeral_type",
+          "label": "Numeral type",
+          "enum": "numeral_type"
+        }
+      ],
+      "form_dimensions": [
+        {
+          "attribute": "grammatical_case",
+          "enum": "grammatical_case"
+        }
+      ]
+    }
+  }
+}

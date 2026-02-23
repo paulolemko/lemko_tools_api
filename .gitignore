@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+logs/
+log.json
+models/
+psql_dump/
+qdrant_snapshots/
+qdrant_data/
+vocab_json/
+transkrypcje/
+artifacts/

@@ -1,0 +1,79 @@
+services:
+  asr:
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/readyz"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lemko-asr
+    env_file:
+      - .env
+    environment:
+      TRANSCRIPTIONS_CSV_PATH: /app/logs/transcriptions_log.csv
+      TRANSCRIPTED_SOURCE_DIR: /app/logs/transcripted_source
+      LEM_SEARCH_LOG_PATH: /app/logs/lemko_search_log.csv
+      LEM_TRANSLATE_LOG_PATH: /app/logs/lemko_translate_log.csv
+      VOCAB_JSON_DIR: /app/vocab_json
+    ports:
+      - "127.0.0.1:8000:8000"   # słucha tylko na hoście (loopback)
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./logs:/app/logs
+      # jeśli NIE kopiujesz modelu do obrazu:
+      - ./models:/app/models:ro
+      - ./vocab_json:/app/vocab_json:ro
+    networks: [web]
+  postgres:
+    image: postgres:16
+    container_name: lemslownik-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${LEMSLOWNIK_DB_NAME}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./psql_dump:/dumps:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks: [web]
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    environment:
+      QDRANT__STORAGE__SNAPSHOTS__ENABLED: "true"
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+      - ./qdrant_snapshots:/qdrant/snapshots
+    networks: [web]
+
+  caddy:
+    image: caddy:2.8
+    container_name: caddy
+    ports:
+      - "8180:80"
+      - "8443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - asr
+    networks: [web]
+
+networks:
+  web: {}
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}
+  postgres_data: {}
+  qdrant_data: {}

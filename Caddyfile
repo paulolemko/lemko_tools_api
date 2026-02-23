@@ -1,0 +1,19 @@
+lemko.tools, www.lemko.tools, apiasr.spektrogram.com {
+	encode gzip
+	log
+
+	# (opcjonalnie) nagłówki CORS w proxy – zwykle wystarczy  middleware w FastAPI
+	 header Access-Control-Allow-Origin "*"
+	# header Access-Control-Allow-Methods "GET, POST, OPTIONS"
+	# header Access-Control-Allow-Headers "*"
+
+	# Reverse proxy do kontenera FastAPI
+	reverse_proxy lemko-asr:8000 {
+		# dłuższe timeouty dla dużych uploadów i długich transkrypcji
+		transport http {
+			read_timeout  15m
+			write_timeout 15m
+		}
+		flush_interval 1s   # płynne SSE dla /events
+	}
+}
