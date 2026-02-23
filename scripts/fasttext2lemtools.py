@@ -8,6 +8,39 @@ import fasttext
 from rapidfuzz import process, fuzz
 from Levenshtein import distance as _lev
 
+
+def _fasttext_model_path(filename: str) -> str:
+    """Resolve ścieżkę do modelu FastText biorąc pod uwagę wolumeny i środowisko."""
+    candidates: list[Path] = []
+
+    env_dir = os.environ.get("FASTTEXT_MODEL_DIR")
+    if env_dir:
+        env_path = Path(env_dir).expanduser()
+        if env_path.is_file():
+            candidates.append(env_path)
+        else:
+            candidates.append(env_path / filename)
+
+    candidates.append(Path("/app/models") / filename)
+
+    script_dir = Path(__file__).resolve().parent
+    candidates.append(script_dir / filename)
+    candidates.append(script_dir.parent / filename)
+
+    # ostatnia próba – aktualny katalog roboczy
+    candidates.append(Path(filename).expanduser())
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        resolved = candidate.expanduser()
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if resolved.exists():
+            return str(resolved)
+    return filename
+
 def make_eq_map(pairs):
     m = {}
     for src, tgt in pairs:
@@ -42,9 +75,9 @@ def _canon(s: str, lang: str) -> str:
     trans = LANG_EQ.get(lang)
     return s.translate(trans) if trans else s
 FT = {
-    "pl": fasttext.load_model("cc.pl.300.bin"),
-    "en": fasttext.load_model("cc.en.300.bin"),
-    "lem": fasttext.load_model("ft_words.bin"),
+    "pl": fasttext.load_model(_fasttext_model_path("cc.pl.300.bin")),
+    "en": fasttext.load_model(_fasttext_model_path("cc.en.300.bin")),
+    "lem": fasttext.load_model(_fasttext_model_path("ft_words.bin")),
 }
 
 STOP = {

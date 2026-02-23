@@ -21,11 +21,11 @@ services:
     ports:
       - "127.0.0.1:8000:8000"   # słucha tylko na hoście (loopback)
     volumes:
-      - ./artifacts:/app/artifacts
+      - ./scripts:/app/scripts:ro
       - ./logs:/app/logs
-      # jeśli NIE kopiujesz modelu do obrazu:
       - ./models:/app/models:ro
       - ./vocab_json:/app/vocab_json:ro
+      - ./morphology_structure_pl_lem_eng:/app/morphology_structure_pl_lem_eng:ro
     networks: [web]
   postgres:
     image: postgres:16

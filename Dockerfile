@@ -20,10 +20,14 @@ COPY requirements-prod.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \
  && python -m pip install --no-cache-dir -r /app/requirements.txt
 
-# Kod aplikacji i zasoby wyszukiwania (bez modeli ASR!)
-COPY app.py asr_engine.py lem-search.py pl-lem-search.py lem_translate.py fasttext2lemtools.py ft_words.bin cc.pl.300.bin cc.en.300.bin /app/
-COPY morphology_structure_pl_lem_eng /app/morphology_structure_pl_lem_eng
-COPY vocab_json /app/vocab_json
+# Przygotuj katalogi, które będą później podpinane z hosta jako wolumeny
+RUN mkdir -p \
+    /app/scripts \
+    /app/models \
+    /app/psql_dump \
+    /app/logs \
+    /app/vocab_json \
+    /app/morphology_structure_pl_lem_eng
 
 # Konfiguracja przez ENV (wartości domyślne)
 #ENV MODEL_PATH="/models/epoch6-step4571_CAPS_WER8.nemo" \
@@ -38,5 +42,5 @@ COPY vocab_json /app/vocab_json
 #    MAX_SYMBOLS_PER_STEP="32"
 
 EXPOSE 8000
-#CMD ["uvicorn","app:app","--host","0.0.0.0","--port","8000","--workers","2"]
-CMD ["uvicorn","app:app","--host","0.0.0.0","--port","8000"]
+#CMD ["uvicorn","--app-dir","/app/scripts","app:app","--host","0.0.0.0","--port","8000","--workers","2"]
+CMD ["uvicorn","--app-dir","/app/scripts","app:app","--host","0.0.0.0","--port","8000"]
