@@ -21,7 +21,17 @@ import torch
 import torchaudio
 from munch import Munch
 
-from kyr2lat import lem_transliterate
+from lem_phonemizer2 import (
+    LANG_BG,
+    LANG_PL,
+    LANG_UK,
+    RAW_RULES,
+    build_backends,
+    build_rule_index,
+    build_rules,
+    phonemize_chunks,
+    split_with_rules,
+)
 
 # Seeds for reproducibility similar to notebook environment.
 torch.manual_seed(0)
@@ -34,7 +44,7 @@ ASR_MODEL_CONFIG = Path("Utils/ASR/config.yml")
 ASR_MODEL_PATH = Path("Utils/ASR/epoch_00080.pth")
 F0_MODEL_PATH = Path("Utils/JDC/bst.t7")
 PLBERT_DIR = Path("Utils/PLBERT_multi/")
-PRETRAINED_MODEL = Path("Models/lemko_finetune/epoch_2nd_00049_nmn_dt.pth")
+PRETRAINED_MODEL = Path("Models/lemko_finetune/epoch_2nd_00044_nmndt_p2.pth")
 
 MODEL_PARAMS = {
     "multispeaker": True,
@@ -164,7 +174,6 @@ class StyleTTS2Engine:
 
     def _import_modules(self) -> None:
         import librosa  # pylint: disable=import-outside-toplevel
-        import phonemizer  # pylint: disable=import-outside-toplevel
         import soundfile as sf  # pylint: disable=import-outside-toplevel
         from nltk.tokenize import word_tokenize  # pylint: disable=import-outside-toplevel
         from models import build_model, load_ASR_models, load_F0_models  # pylint: disable=import-outside-toplevel
@@ -177,7 +186,6 @@ class StyleTTS2Engine:
         )
 
         self.librosa = librosa
-        self.phonemizer = phonemizer
         self.sf = sf
         self.word_tokenize = word_tokenize
         self.build_model = build_model
@@ -230,14 +238,23 @@ class StyleTTS2Engine:
             sigma_schedule=self.KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
             clamp=False,
         )
-        self.global_phonemizer = self.phonemizer.backend.EspeakBackend(
-            language="pl", preserve_punctuation=True, with_stress=True
-        )
         self.to_mel = torchaudio.transforms.MelSpectrogram(
             n_mels=80, n_fft=2048, win_length=1200, hop_length=300
         )
         self.mean = -4
         self.std = 4
+        self.phoneme_rules = build_rules(RAW_RULES)
+        self.phoneme_rule_index = build_rule_index(self.phoneme_rules)
+        phoneme_langs = {LANG_PL, LANG_UK, LANG_BG}
+        pl_code = os.getenv("STYLE_TTS2_PHONEMIZER_PL", "pl")
+        uk_code = os.getenv("STYLE_TTS2_PHONEMIZER_UK", "uk")
+        bg_code = os.getenv("STYLE_TTS2_PHONEMIZER_BG", "bg")
+        self.phoneme_backends = build_backends(
+            phoneme_langs,
+            pl_code=pl_code,
+            uk_code=uk_code,
+            bg_code=bg_code,
+        )
 
     def _detect_device(self) -> str:
         if torch.cuda.is_available():
@@ -301,9 +318,8 @@ class StyleTTS2Engine:
             raise ValueError("num_refs must be >= 1")
         refs = self._select_references(speaker, num_refs)
         ref_style = self._build_style_embedding(tuple(refs))
-        synth_text = lem_transliterate(text)
         start = time.time()
-        wav = self._inference(synth_text, ref_style, preset_params)
+        wav = self._inference(text, ref_style, preset_params)
         elapsed = time.time() - start
         wav = self._post_process(wav, trim_in_ms=trim_in_ms, trim_out_ms=trim_out_ms)
         sample_rate = 24000
@@ -348,6 +364,14 @@ class StyleTTS2Engine:
         mel_tensor = (torch.log(1e-5 + mel_tensor.unsqueeze(0)) - self.mean) / self.std
         return mel_tensor
 
+    def _phonemize_for_synthesis(self, text: str) -> str:
+        normalized = (text or "").strip()
+        if not normalized:
+            return ""
+        chunks = split_with_rules(normalized, self.phoneme_rule_index)
+        ipa = phonemize_chunks(chunks, self.phoneme_backends)
+        return ipa.replace("ɨɯ", "ɯ").replace("iɡrɛkɯ", "ɯ")
+
     def _post_process(self, wav: np.ndarray, *, trim_in_ms: int, trim_out_ms: int) -> np.ndarray:
         sample_rate = 24000
         fade_ms = 100
@@ -368,10 +392,10 @@ class StyleTTS2Engine:
         return wav
 
     def _inference(self, text: str, ref_s: torch.Tensor, preset_params: dict) -> np.ndarray:
-        ps = self.global_phonemizer.phonemize([text])
-        tokens = self.word_tokenize(ps[0])
-        tokens = " ".join(tokens)
-        tokens = self.textcleaner(tokens)
+        ipa = self._phonemize_for_synthesis(text)
+        token_list = self.word_tokenize(ipa)
+        token_string = " ".join(token_list)
+        tokens = self.textcleaner(token_string)
         tokens.insert(0, 0)
         tokens = torch.LongTensor(tokens).to(self.device).unsqueeze(0)
         with torch.no_grad():
