@@ -2,22 +2,21 @@
 # app.py — API (odchudzone) korzystające z ASREngine
 # =============================
 
-import os, json, asyncio, datetime, uuid, importlib.util, threading, sys, csv
-from typing import Dict, Any, Optional, List, Set, Sequence, Tuple
-import tempfile
+import os, json, asyncio, datetime, uuid, importlib.util, threading, sys, csv, tempfile, shutil, functools, concurrent.futures
+from typing import Dict, Any, Optional, List, Set, Sequence, Tuple, Literal
 from pathlib import Path
 import torchaudio
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Request, BackgroundTasks, Response
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, conint, constr
 
 
 # import silnika ASR
 from asr_engine import ASREngine, ASRConfig
 from lem_translate import DEFAULT_MODEL as LEM_TRANSLATE_BASE_MODEL, lem_translate as run_lemko_translate
+from styletts2_engine import StyleTTS2Engine, SynthesisResult
 
 # --- Konfiguracja API ---
 TRANS_DIR    = os.getenv("TRANS_DIR", "transkrypcje")
@@ -51,6 +50,17 @@ lem_search_log_lock = asyncio.Lock()
 lem_translate_log_lock = asyncio.Lock()
 jobs_lock = asyncio.Lock()
 jobs: Dict[str, Dict[str, Any]] = {}
+
+MAX_TTS_CONCURRENCY = max(1, int(os.getenv("MAX_TTS_CONCURRENCY", "1")))
+TTS_MAX_WORKERS = max(1, int(os.getenv("TTS_MAX_WORKERS", str(MAX_TTS_CONCURRENCY))))
+TTS_TEXT_MAX_CHARS = max(32, int(os.getenv("TTS_TEXT_MAX_CHARS", "1000")))
+TTS_NUM_REFS = max(1, int(os.getenv("TTS_NUM_REFS", "3")))
+TTS_TRIM_IN_MS = max(0, int(os.getenv("TTS_TRIM_IN_MS", "100")))
+TTS_TRIM_OUT_MS = max(0, int(os.getenv("TTS_TRIM_OUT_MS", "200")))
+tts_sem = asyncio.Semaphore(MAX_TTS_CONCURRENCY)
+tts_engine: StyleTTS2Engine | None = None
+tts_executor: concurrent.futures.ThreadPoolExecutor | None = None
+tts_runtime_lock = threading.Lock()
 
 LEM_SEARCH_ENABLED = os.getenv("LEM_SEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 _lem_search_resources: Optional[Dict[str, Any]] = None
@@ -413,6 +423,12 @@ class LemSearchRequest(BaseModel):
 class LemTranslateRequest(BaseModel):
     text: str
 
+
+class TTSSynthesizeRequest(BaseModel):
+    text: constr(strip_whitespace=True, min_length=1, max_length=TTS_TEXT_MAX_CHARS)
+    speaker: conint(ge=0, le=1) = 0
+    preset: Literal["default", "less", "more"] = "default"
+
 # --- Auth (DEV: token == JWT_SECRET) ---
 async def require_auth(authorization: str | None = Header(default=None)):
     if not JWT_SECRET:
@@ -757,6 +773,41 @@ def _lemko_result_has_hits(result: Dict[str, Any]) -> bool:
     return False
 
 
+def _ensure_tts_runtime() -> tuple[StyleTTS2Engine, concurrent.futures.ThreadPoolExecutor]:
+    global tts_engine, tts_executor
+    base_env = os.getenv("STYLE_TTS2_DIR")
+    refs_env = os.getenv("STYLE_TTS2_REFS_ROOT")
+    base_path = Path(base_env).expanduser().resolve() if base_env else None
+    refs_path = Path(refs_env).expanduser().resolve() if refs_env else None
+    with tts_runtime_lock:
+        if tts_engine is None:
+            tts_engine = StyleTTS2Engine(base_dir=base_path, refs_root=refs_path)
+        if tts_executor is None:
+            tts_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=TTS_MAX_WORKERS,
+                thread_name_prefix="styletts2",
+            )
+    assert tts_engine is not None
+    assert tts_executor is not None
+    return tts_engine, tts_executor
+
+
+async def _run_tts_synthesis(payload: TTSSynthesizeRequest, output_path: Path) -> SynthesisResult:
+    engine, executor = _ensure_tts_runtime()
+    loop = asyncio.get_running_loop()
+    func = functools.partial(
+        engine.synthesize_to_file,
+        text=payload.text,
+        speaker=int(payload.speaker),
+        preset=payload.preset,
+        num_refs=TTS_NUM_REFS,
+        trim_in_ms=TTS_TRIM_IN_MS,
+        trim_out_ms=TTS_TRIM_OUT_MS,
+        output_path=output_path,
+    )
+    return await loop.run_in_executor(executor, func)
+
+
 @app.post("/v1/lemko/search/pl")
 async def lemko_search_from_polish(payload: LemSearchRequest, authorization: str | None = Header(default=None)):
     return await _lemko_translation_endpoint(payload, "pl", authorization, "/v1/lemko/search/pl")
@@ -831,6 +882,57 @@ async def lem_translate_pl(payload: LemTranslateRequest, authorization: str | No
         "attempts": result.get("attempts"),
     }
     return response_payload
+
+
+@app.post("/v1/tts")
+async def synthesize_tts(
+    payload: TTSSynthesizeRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str | None = Header(default=None),
+):
+    await require_auth(authorization)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="tts_job_"))
+    output_path = tmp_dir / f"tts_{uuid.uuid4().hex[:8]}.m4a"
+    try:
+        async with tts_sem:
+            result = await _run_tts_synthesis(payload, output_path)
+    except ValueError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return _error("INVALID_REQUEST", str(exc), {}, 400)
+    except FileNotFoundError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return _error("TTS_RESOURCE_NOT_FOUND", str(exc), {}, 500)
+    except RuntimeError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return _error("TTS_FAILED", str(exc), {}, 500)
+    except Exception as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return _error("TTS_ERROR", "Nie udało się wygenerować audio.", {"reason": str(exc)}, 500)
+
+    background_tasks.add_task(shutil.rmtree, tmp_dir, True)
+    filename = f"tts_{payload.speaker}_{uuid.uuid4().hex[:8]}.m4a"
+    headers = {
+        "X-TTS-RTF": f"{result.rtf:.5f}",
+        "X-TTS-Duration": f"{result.duration_s:.3f}",
+        "X-TTS-Elapsed": f"{result.elapsed_s:.3f}",
+    }
+    await append_log(
+        {
+            "event": "tts",
+            "speaker": int(payload.speaker),
+            "preset": payload.preset,
+            "text_chars": len(payload.text),
+            "rtf": result.rtf,
+            "duration_s": result.duration_s,
+        }
+    )
+    return FileResponse(
+        result.output_path,
+        media_type="audio/mp4",
+        filename=filename,
+        headers=headers,
+        background=background_tasks,
+    )
 
 
 # --- Praca w tle ---

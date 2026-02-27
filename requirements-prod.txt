@@ -43,6 +43,7 @@ IPython
 # Wymagane przez NeMo (import-time)
 lhotse==1.30.3
 einops==0.8.1
+einops-exts==0.0.4
 sentencepiece==0.2.1
 
 # Audio I/O i DSP (zgodne z Pana środowiskiem)
@@ -51,3 +52,6 @@ librosa==0.11.0
 numpy==1.26.4
 numba==0.61.2
 llvmlite==0.44.0
+munch==4.0.0
+phonemizer==3.2.1
+nltk==3.9.1

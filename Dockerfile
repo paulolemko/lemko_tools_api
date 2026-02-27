@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # system libs dla soundfile/librosa/ffmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libsndfile1 ffmpeg git libgomp1 \
+    build-essential libsndfile1 ffmpeg git libgomp1 espeak-ng espeak-ng-espeak \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -18,7 +18,8 @@ WORKDIR /app
 # Zależności (bez cache pip w warstwie)
 COPY requirements-prod.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \
- && python -m pip install --no-cache-dir -r /app/requirements.txt
+ && python -m pip install --no-cache-dir -r /app/requirements.txt \
+ && python -m nltk.downloader punkt punkt_tab
 
 # Przygotuj katalogi, które będą później podpinane z hosta jako wolumeny
 RUN mkdir -p \

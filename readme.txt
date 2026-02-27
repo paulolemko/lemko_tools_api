@@ -1,12 +1,10 @@
 
-2do:
-- 2github
-- service
-- domain_ok
+
 
 
 # przebuduj i podnieś TYLKO backend
 docker compose build asr
+docker compose logs -f asr
 docker compose up -d --no-deps --force-recreate asr
 
 docker compose build asr && docker compose up -d asr
