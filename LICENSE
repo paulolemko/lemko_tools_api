@@ -1,0 +1,27 @@
+Proprietary License
+
+Copyright (c) 2026 Pawel Malecki and contributors.
+All rights reserved.
+
+This repository and its contents are provided for private review, operation,
+and maintenance by authorized users only. No permission is granted to copy,
+modify, publish, distribute, sublicense, sell, host, or otherwise use this
+software, documentation, data, model configuration, or related assets except
+under a separate written agreement with the copyright holder.
+
+The repository references third-party open-source software, models, datasets,
+and services. Those third-party components remain governed by their own
+licenses and terms. This license does not grant rights to any third-party
+component, model weight, dataset, voice sample, database dump, or external API.
+
+If you received this repository without an explicit written authorization,
+you must not use it and should contact the repository owner.
+
+NO WARRANTY
+
+THE SOFTWARE AND DOCUMENTATION ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM OR RELATED TO
+THE SOFTWARE, DOCUMENTATION, DATA, MODELS, OR THEIR USE.

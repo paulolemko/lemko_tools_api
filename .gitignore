@@ -1,7 +1,10 @@
 .venv/
+.DS_Store
 __pycache__/
 *.pyc
 .env
+.env.*
+!.env.example
 logs/
 log.json
 models/
@@ -10,4 +13,13 @@ qdrant_snapshots/
 qdrant_data/
 vocab_json/
 transkrypcje/
+transcripted_source/
 artifacts/
+exports/
+term_*.json
+*.wav
+*.m4a
+*.mp3
+*.csv
+*.jsonl
+*.bin

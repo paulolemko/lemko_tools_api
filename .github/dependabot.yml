@@ -1,0 +1,48 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Warsaw"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+    groups:
+      python-runtime:
+        patterns:
+          - "fastapi"
+          - "starlette"
+          - "uvicorn"
+          - "pydantic"
+          - "python-multipart"
+      ml-runtime:
+        patterns:
+          - "torch"
+          - "torchaudio"
+          - "nemo-toolkit"
+          - "transformers"
+          - "datasets"
+          - "nltk"
+      audio-search:
+        patterns:
+          - "soundfile"
+          - "librosa"
+          - "phonemizer"
+          - "fasttext"
+          - "rapidfuzz"
+          - "python-Levenshtein"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:30"
+      timezone: "Europe/Warsaw"
+    labels:
+      - "dependencies"
+      - "github-actions"

@@ -1,0 +1,22 @@
+Lemko Tools API
+Copyright (c) 2026 Pawel Malecki and contributors.
+
+This repository contains application code and documentation for ASR,
+dictionary search, Lemko-to-Polish translation assistance, phonemization,
+transliteration, and StyleTTS2-based text-to-speech workflows.
+
+The repository does not include the production database, private logs, voice
+reference recordings, FastText model binaries, NeMo model weights, StyleTTS2
+weights, OpenAI credentials, or deployment secrets. These assets may have
+separate owners, licenses, privacy obligations, and usage restrictions.
+
+Third-party dependencies are listed in requirements-prod.txt and summarized in
+THIRD_PARTY_LICENSES.md. Their copyrights, licenses, and notices remain with
+their respective owners.
+
+Model and data governance notes are documented in:
+
+- MODELS.md
+- DATA_LICENSE.md
+- PRIVACY.md
+- SECURITY.md

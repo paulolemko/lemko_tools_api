@@ -2,7 +2,7 @@
 # app.py — API (odchudzone) korzystające z ASREngine
 # =============================
 
-import os, json, asyncio, datetime, uuid, importlib.util, threading, sys, csv, tempfile, shutil, functools, concurrent.futures
+import os, json, asyncio, datetime, uuid, importlib.util, threading, sys, csv, tempfile, shutil, functools, concurrent.futures, time
 from typing import Dict, Any, Optional, List, Set, Sequence, Tuple, Literal
 from pathlib import Path
 import torchaudio
@@ -17,66 +17,6 @@ from pydantic import BaseModel, conint, constr
 from asr_engine import ASREngine, ASRConfig
 from lem_translate import DEFAULT_MODEL as LEM_TRANSLATE_BASE_MODEL, lem_translate as run_lemko_translate
 from styletts2_engine import StyleTTS2Engine, SynthesisResult
-
-# --- Konfiguracja API ---
-TRANS_DIR    = os.getenv("TRANS_DIR", "transkrypcje")
-LOG_PATH     = os.getenv("LOG_PATH", "log.json")
-TRANSCRIPTED_SOURCE_DIR = os.getenv("TRANSCRIPTED_SOURCE_DIR", "transcripted_source")
-TRANSCRIPTIONS_CSV_PATH = os.getenv("TRANSCRIPTIONS_CSV_PATH", "transcriptions_log.csv")
-TRANSCRIPTIONS_CSV_HEADERS = ("filename", "timestamp", "size_bytes", "transcript_text")
-LEM_SEARCH_LOG_PATH = os.getenv("LEM_SEARCH_LOG_PATH", "lemko_search_log.csv")
-LEM_SEARCH_LOG_HEADERS = ("timestamp", "endpoint", "query", "result")
-LEM_TRANSLATE_LOG_PATH = os.getenv("LEM_TRANSLATE_LOG_PATH", "lemko_translate_log.csv")
-LEM_TRANSLATE_LOG_HEADERS = ("timestamp", "endpoint", "query", "result_text")
-LEM_TTS_LOG_PATH = os.getenv("LEM_TTS_LOG_PATH", "lemko_tts_log.csv")
-LEM_TTS_LOG_HEADERS = ("timestamp", "endpoint", "speaker", "text")
-CORS_ALLOW_ORIGINS = [o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()]
-JWT_SECRET  = os.getenv("JWT_SECRET", "")
-MAX_UPLOAD_MB= int(os.getenv("MAX_UPLOAD_MB", "200"))
-MAX_AUDIO_S  = int(os.getenv("MAX_AUDIO_SECONDS", "7200"))
-
-app = FastAPI(title="Lemko RNNT ASR – API v1 (engine-separated)", version="1.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ALLOW_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET","POST","OPTIONS"],
-    allow_headers=["*"],
-)
-
-engine: ASREngine | None = None
-sem = asyncio.Semaphore(int(os.getenv("MAX_CONCURRENCY", "1")))
-log_lock = asyncio.Lock()
-csv_log_lock = asyncio.Lock()
-lem_search_log_lock = asyncio.Lock()
-lem_translate_log_lock = asyncio.Lock()
-lem_tts_log_lock = asyncio.Lock()
-jobs_lock = asyncio.Lock()
-jobs: Dict[str, Dict[str, Any]] = {}
-
-MAX_TTS_CONCURRENCY = max(1, int(os.getenv("MAX_TTS_CONCURRENCY", "1")))
-TTS_MAX_WORKERS = max(1, int(os.getenv("TTS_MAX_WORKERS", str(MAX_TTS_CONCURRENCY))))
-TTS_TEXT_MAX_CHARS = max(32, int(os.getenv("TTS_TEXT_MAX_CHARS", "1000")))
-TTS_NUM_REFS = max(1, int(os.getenv("TTS_NUM_REFS", "3")))
-TTS_TRIM_IN_MS = max(0, int(os.getenv("TTS_TRIM_IN_MS", "100")))
-TTS_TRIM_OUT_MS = max(0, int(os.getenv("TTS_TRIM_OUT_MS", "200")))
-tts_sem = asyncio.Semaphore(MAX_TTS_CONCURRENCY)
-tts_engine: StyleTTS2Engine | None = None
-tts_executor: concurrent.futures.ThreadPoolExecutor | None = None
-tts_runtime_lock = threading.Lock()
-
-LEM_SEARCH_ENABLED = os.getenv("LEM_SEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-_lem_search_resources: Optional[Dict[str, Any]] = None
-_lem_search_error: Optional[str] = None
-_lem_search_lock = threading.Lock()
-
-_pl_lem_search_resources: Optional[Dict[str, Any]] = None
-_pl_lem_search_error: Optional[str] = None
-_pl_lem_search_lock = threading.Lock()
-
-LEM_TRANSLATE_ENABLED = os.getenv("LEM_TRANSLATE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-_lem_translate_model_env = os.getenv("LEM_TRANSLATE_MODEL", "").strip()
-LEM_TRANSLATE_DEFAULT_MODEL = _lem_translate_model_env or LEM_TRANSLATE_BASE_MODEL
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -104,6 +44,147 @@ def _env_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+# --- Konfiguracja API ---
+TRANS_DIR    = os.getenv("TRANS_DIR", "transkrypcje")
+LOG_PATH     = os.getenv("LOG_PATH", "log.json")
+TRANSCRIPTED_SOURCE_DIR = os.getenv("TRANSCRIPTED_SOURCE_DIR", "transcripted_source")
+TRANSCRIPTIONS_CSV_PATH = os.getenv("TRANSCRIPTIONS_CSV_PATH", "transcriptions_log.csv")
+TRANSCRIPTIONS_CSV_HEADERS = ("filename", "timestamp", "size_bytes", "transcript_text")
+LEM_SEARCH_LOG_PATH = os.getenv("LEM_SEARCH_LOG_PATH", "lemko_search_log.csv")
+LEM_SEARCH_LOG_HEADERS = ("timestamp", "endpoint", "query", "result")
+LEM_TRANSLATE_LOG_PATH = os.getenv("LEM_TRANSLATE_LOG_PATH", "lemko_translate_log.csv")
+LEM_TRANSLATE_LOG_HEADERS = ("timestamp", "endpoint", "query", "result_text")
+LEM_TTS_LOG_PATH = os.getenv("LEM_TTS_LOG_PATH", "lemko_tts_log.csv")
+LEM_TTS_LOG_HEADERS = ("timestamp", "endpoint", "speaker", "text")
+ENVIRONMENT = os.getenv("ENVIRONMENT", os.getenv("APP_ENV", "development")).strip().lower()
+PRODUCTION_MODE = _env_bool("PRODUCTION_MODE", ENVIRONMENT in {"prod", "production"})
+CORS_ALLOW_ORIGINS = [o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()]
+CORS_ALLOW_CREDENTIALS = _env_bool("CORS_ALLOW_CREDENTIALS", not PRODUCTION_MODE)
+JWT_SECRET  = os.getenv("JWT_SECRET", "").strip()
+MAX_UPLOAD_MB = max(1, _env_int("MAX_UPLOAD_MB", 200))
+MAX_AUDIO_S = max(0, _env_int("MAX_AUDIO_SECONDS", 7200))
+ALLOWED_AUDIO_TYPES = {"audio/wav", "audio/x-wav", "audio/flac", "audio/mpeg", "application/octet-stream"}
+RATE_LIMIT_ENABLED = PRODUCTION_MODE or _env_bool("RATE_LIMIT_ENABLED", False)
+RATE_LIMIT_REQUESTS = max(1, _env_int("RATE_LIMIT_REQUESTS", 60))
+RATE_LIMIT_WINDOW_SECONDS = max(1, _env_int("RATE_LIMIT_WINDOW_SECONDS", 60))
+TRUST_PROXY_HEADERS = _env_bool("TRUST_PROXY_HEADERS", PRODUCTION_MODE)
+
+
+def _validate_security_config() -> None:
+    if not PRODUCTION_MODE:
+        return
+    if not JWT_SECRET:
+        raise RuntimeError("PRODUCTION_MODE requires JWT_SECRET to be set.")
+    if not CORS_ALLOW_ORIGINS or "*" in CORS_ALLOW_ORIGINS:
+        raise RuntimeError("PRODUCTION_MODE requires explicit CORS_ALLOW_ORIGINS without wildcard '*'.")
+    if MAX_AUDIO_S <= 0:
+        raise RuntimeError("PRODUCTION_MODE requires MAX_AUDIO_SECONDS to be greater than zero.")
+
+
+_validate_security_config()
+
+app = FastAPI(title="Lemko RNNT ASR – API v1 (engine-separated)", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_credentials=CORS_ALLOW_CREDENTIALS,
+    allow_methods=["GET","POST","OPTIONS"],
+    allow_headers=["*"],
+)
+
+engine: ASREngine | None = None
+sem = asyncio.Semaphore(int(os.getenv("MAX_CONCURRENCY", "1")))
+log_lock = asyncio.Lock()
+csv_log_lock = asyncio.Lock()
+lem_search_log_lock = asyncio.Lock()
+lem_translate_log_lock = asyncio.Lock()
+lem_tts_log_lock = asyncio.Lock()
+jobs_lock = asyncio.Lock()
+rate_limit_lock = asyncio.Lock()
+jobs: Dict[str, Dict[str, Any]] = {}
+rate_limit_buckets: Dict[str, List[float]] = {}
+
+MAX_TTS_CONCURRENCY = max(1, int(os.getenv("MAX_TTS_CONCURRENCY", "1")))
+TTS_MAX_WORKERS = max(1, int(os.getenv("TTS_MAX_WORKERS", str(MAX_TTS_CONCURRENCY))))
+TTS_TEXT_MAX_CHARS = max(32, int(os.getenv("TTS_TEXT_MAX_CHARS", "1000")))
+TTS_NUM_REFS = max(1, int(os.getenv("TTS_NUM_REFS", "3")))
+TTS_TRIM_IN_MS = max(0, int(os.getenv("TTS_TRIM_IN_MS", "100")))
+TTS_TRIM_OUT_MS = max(0, int(os.getenv("TTS_TRIM_OUT_MS", "200")))
+tts_sem = asyncio.Semaphore(MAX_TTS_CONCURRENCY)
+tts_engine: StyleTTS2Engine | None = None
+tts_executor: concurrent.futures.ThreadPoolExecutor | None = None
+tts_runtime_lock = threading.Lock()
+
+LEM_SEARCH_ENABLED = os.getenv("LEM_SEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+_lem_search_resources: Optional[Dict[str, Any]] = None
+_lem_search_error: Optional[str] = None
+_lem_search_lock = threading.Lock()
+
+_pl_lem_search_resources: Optional[Dict[str, Any]] = None
+_pl_lem_search_error: Optional[str] = None
+_pl_lem_search_lock = threading.Lock()
+
+LEM_TRANSLATE_ENABLED = os.getenv("LEM_TRANSLATE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+_lem_translate_model_env = os.getenv("LEM_TRANSLATE_MODEL", "").strip()
+LEM_TRANSLATE_DEFAULT_MODEL = _lem_translate_model_env or LEM_TRANSLATE_BASE_MODEL
+
+
+def _client_rate_limit_key(request: Request) -> str:
+    if TRUST_PROXY_HEADERS:
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        if forwarded_for:
+            return forwarded_for.split(",", 1)[0].strip() or "unknown"
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        if real_ip:
+            return real_ip
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+async def _rate_limit_response(request: Request) -> Optional[JSONResponse]:
+    if not RATE_LIMIT_ENABLED or not request.url.path.startswith("/v1/"):
+        return None
+
+    now = time.monotonic()
+    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+    key = _client_rate_limit_key(request)
+    async with rate_limit_lock:
+        bucket = [ts for ts in rate_limit_buckets.get(key, []) if ts > cutoff]
+        if len(bucket) >= RATE_LIMIT_REQUESTS:
+            oldest = min(bucket) if bucket else now
+            retry_after = max(1, int(round((oldest + RATE_LIMIT_WINDOW_SECONDS) - now)))
+            rate_limit_buckets[key] = bucket
+            return JSONResponse(
+                status_code=429,
+                headers={
+                    "Retry-After": str(retry_after),
+                    "X-RateLimit-Limit": str(RATE_LIMIT_REQUESTS),
+                    "X-RateLimit-Window": str(RATE_LIMIT_WINDOW_SECONDS),
+                    "X-RateLimit-Remaining": "0",
+                },
+                content={
+                    "error": {
+                        "code": "RATE_LIMITED",
+                        "message": "Too many requests.",
+                        "details": {"retry_after_seconds": retry_after},
+                    }
+                },
+            )
+        bucket.append(now)
+        rate_limit_buckets[key] = bucket
+
+    return None
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    response = await _rate_limit_response(request)
+    if response is not None:
+        return response
+    return await call_next(request)
 
 
 def _load_lem_search_module():
@@ -432,9 +513,11 @@ class TTSSynthesizeRequest(BaseModel):
     speaker: conint(ge=0, le=1) = 0
     preset: Literal["default", "less", "more"] = "default"
 
-# --- Auth (DEV: token == JWT_SECRET) ---
+# --- Auth (token == JWT_SECRET) ---
 async def require_auth(authorization: str | None = Header(default=None)):
     if not JWT_SECRET:
+        if PRODUCTION_MODE:
+            raise HTTPException(status_code=500, detail="Authentication is not configured")
         return
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
@@ -611,30 +694,41 @@ STAGE_PROGRESS = {
     "błąd": 1.0,
 }
 
+def _public_error_message(status: int) -> str:
+    if status == 502:
+        return "Upstream service error."
+    if status == 503:
+        return "Service unavailable."
+    return "Internal service error."
+
+
 def _error(code: str, message: str, details: dict, status: int):
+    if PRODUCTION_MODE and status >= 500 and not code.endswith("_DISABLED"):
+        message = _public_error_message(status)
+        details = {}
     return JSONResponse(status_code=status, content={"error": {"code": code, "message": message, "details": details}})
+
+
+def _public_job_error(error: Optional[str]) -> Optional[str]:
+    if error and PRODUCTION_MODE:
+        return "Job failed."
+    return error
 
 @app.post("/v1/transcriptions")
 async def create_transcription(request: Request, file: UploadFile = File(...), authorization: str | None = Header(default=None)):
     await require_auth(authorization)
-    allowed = {"audio/wav", "audio/x-wav", "audio/flac", "audio/mpeg", "application/octet-stream"}
-    if file.content_type and file.content_type not in allowed:
-        return _error("UNSUPPORTED_MEDIA_TYPE", f"{file.content_type} is not allowed", {"allowed": sorted(list(allowed))}, 415)
+    if file.content_type and file.content_type not in ALLOWED_AUDIO_TYPES:
+        return _error("UNSUPPORTED_MEDIA_TYPE", f"{file.content_type} is not allowed", {"allowed": sorted(list(ALLOWED_AUDIO_TYPES))}, 415)
 
     data = await file.read()
     size_bytes = len(data)
-    if size_bytes > int(os.getenv("MAX_UPLOAD_MB","200"))*1024*1024:
+    if size_bytes > MAX_UPLOAD_MB * 1024 * 1024:
         return _error("PAYLOAD_TOO_LARGE", "Upload too large", {}, 413)
-
-    job_id = uuid.uuid4().hex[:8]
-    original_filename = file.filename or "upload"
-    archived_path = await archive_upload(job_id, original_filename, data)
 
     # Zapisz upload do tymczasowego pliku; engine sam zadba o resampling
     fd, tmp_in = tempfile.mkstemp(suffix=".bin"); os.close(fd)
     with open(tmp_in, "wb") as f:
         f.write(data)
-    del data
 
     # Wyznacz długość orientacyjnie (można pominąć i pokazać później)
     try:
@@ -642,6 +736,23 @@ async def create_transcription(request: Request, file: UploadFile = File(...), a
         duration_s = float(info.num_frames) / float(info.sample_rate) if info.sample_rate else None
     except Exception:
         duration_s = None
+    if duration_s is not None and MAX_AUDIO_S > 0 and duration_s > MAX_AUDIO_S:
+        try:
+            os.remove(tmp_in)
+        except OSError:
+            pass
+        del data
+        return _error(
+            "AUDIO_TOO_LONG",
+            "Audio duration exceeds the configured limit.",
+            {"audio_duration_s": round(duration_s, 3), "max_audio_seconds": MAX_AUDIO_S},
+            413,
+        )
+
+    job_id = uuid.uuid4().hex[:8]
+    original_filename = file.filename or "upload"
+    archived_path = await archive_upload(job_id, original_filename, data)
+    del data
 
     async with jobs_lock:
         jobs[job_id] = {
@@ -686,7 +797,7 @@ async def transcription_status(job_id: str, authorization: str | None = Header(d
         "filename": j["filename"],
         "audio_duration_s": j.get("audio_duration_s"),
         "model_id": j["model_id"],
-        "error": j["error"],
+        "error": _public_job_error(j["error"]),
     }
 
 @app.get("/v1/transcriptions/{job_id}/result")
