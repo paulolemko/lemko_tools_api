@@ -28,6 +28,8 @@ LEM_SEARCH_LOG_PATH = os.getenv("LEM_SEARCH_LOG_PATH", "lemko_search_log.csv")
 LEM_SEARCH_LOG_HEADERS = ("timestamp", "endpoint", "query", "result")
 LEM_TRANSLATE_LOG_PATH = os.getenv("LEM_TRANSLATE_LOG_PATH", "lemko_translate_log.csv")
 LEM_TRANSLATE_LOG_HEADERS = ("timestamp", "endpoint", "query", "result_text")
+LEM_TTS_LOG_PATH = os.getenv("LEM_TTS_LOG_PATH", "lemko_tts_log.csv")
+LEM_TTS_LOG_HEADERS = ("timestamp", "endpoint", "speaker", "text")
 CORS_ALLOW_ORIGINS = [o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()]
 JWT_SECRET  = os.getenv("JWT_SECRET", "")
 MAX_UPLOAD_MB= int(os.getenv("MAX_UPLOAD_MB", "200"))
@@ -48,6 +50,7 @@ log_lock = asyncio.Lock()
 csv_log_lock = asyncio.Lock()
 lem_search_log_lock = asyncio.Lock()
 lem_translate_log_lock = asyncio.Lock()
+lem_tts_log_lock = asyncio.Lock()
 jobs_lock = asyncio.Lock()
 jobs: Dict[str, Dict[str, Any]] = {}
 
@@ -542,6 +545,25 @@ async def append_lem_translate_log(endpoint: str, query: Optional[str], result_t
         await asyncio.to_thread(_write_row)
 
 
+async def append_lem_tts_log(endpoint: str, speaker: int | str, text: Optional[str]) -> None:
+    sanitized_text = " ".join((text or "").splitlines()).strip()
+    timestamp = datetime.datetime.utcnow().isoformat() + "Z"
+    row = [timestamp, endpoint, str(speaker), sanitized_text]
+
+    async with lem_tts_log_lock:
+        csv_path = Path(LEM_TTS_LOG_PATH)
+
+        def _write_row():
+            needs_header = not csv_path.exists() or csv_path.stat().st_size == 0
+            with open(csv_path, "a", newline="", encoding="utf-8") as csv_file:
+                writer = csv.writer(csv_file)
+                if needs_header:
+                    writer.writerow(LEM_TTS_LOG_HEADERS)
+                writer.writerow(row)
+
+        await asyncio.to_thread(_write_row)
+
+
 @app.head("/healthz")
 async def healthz_head():
     return Response(status_code=200, headers={"Content-Length": "0"})
@@ -564,6 +586,7 @@ def startup():
         (Path(TRANSCRIPTIONS_CSV_PATH), TRANSCRIPTIONS_CSV_HEADERS),
         (Path(LEM_SEARCH_LOG_PATH), LEM_SEARCH_LOG_HEADERS),
         (Path(LEM_TRANSLATE_LOG_PATH), LEM_TRANSLATE_LOG_HEADERS),
+        (Path(LEM_TTS_LOG_PATH), LEM_TTS_LOG_HEADERS),
     ):
         _ensure_csv_initialized(raw_path, headers)
     engine = ASREngine.from_env().load()
@@ -890,7 +913,9 @@ async def synthesize_tts(
     background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None),
 ):
+    endpoint = "/v1/tts"
     await require_auth(authorization)
+    await append_lem_tts_log(endpoint, payload.speaker, payload.text)
     tmp_dir = Path(tempfile.mkdtemp(prefix="tts_job_"))
     output_path = tmp_dir / f"tts_{uuid.uuid4().hex[:8]}.m4a"
     try:

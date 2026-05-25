@@ -17,6 +17,7 @@ services:
       TRANSCRIPTED_SOURCE_DIR: /app/logs/transcripted_source
       LEM_SEARCH_LOG_PATH: /app/logs/lemko_search_log.csv
       LEM_TRANSLATE_LOG_PATH: /app/logs/lemko_translate_log.csv
+      LEM_TTS_LOG_PATH: /app/logs/lemko_tts_log.csv
       VOCAB_JSON_DIR: /app/vocab_json
     ports:
       - "127.0.0.1:8000:8000"   # słucha tylko na hoście (loopback)
