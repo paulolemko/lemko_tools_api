@@ -18,8 +18,8 @@ psycopg2-binary==2.9.9
 qdrant-client==1.15.1
 fasttext==0.9.3
 openai>=1.40.0
-rapidfuzz==3.9.7
-python-Levenshtein==0.25.1
+rapidfuzz==3.14.5
+python-Levenshtein==0.27.3
 
 # ASR stack
 #torch==2.4.0
@@ -53,5 +53,5 @@ numpy==1.26.4
 numba==0.61.2
 llvmlite==0.44.0
 munch==4.0.0
-phonemizer==3.2.1
+phonemizer==3.3.0
 nltk==3.9.1
