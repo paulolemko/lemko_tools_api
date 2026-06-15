@@ -2,10 +2,11 @@
 # app.py — API (odchudzone) korzystające z ASREngine
 # =============================
 
-import os, json, asyncio, datetime, uuid, importlib.util, threading, sys, csv, tempfile, shutil, functools, concurrent.futures, time
+import os, json, asyncio, datetime, uuid, importlib.util, threading, sys, csv, tempfile, shutil, functools, concurrent.futures, re, time
 from typing import Dict, Any, Optional, List, Set, Sequence, Tuple, Literal
 from pathlib import Path
 import torchaudio
+import numpy as np
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Request, BackgroundTasks, Response
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
@@ -17,7 +18,6 @@ from pydantic import BaseModel, conint, constr
 from asr_engine import ASREngine, ASRConfig
 from lem_translate import DEFAULT_MODEL as LEM_TRANSLATE_BASE_MODEL, lem_translate as run_lemko_translate
 from styletts2_engine import StyleTTS2Engine, SynthesisResult
-
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -513,6 +513,18 @@ class TTSSynthesizeRequest(BaseModel):
     speaker: conint(ge=0, le=1) = 0
     preset: Literal["default", "less", "more"] = "default"
 
+
+class LemfmArticleTTSRequest(BaseModel):
+    text: constr(strip_whitespace=True, min_length=1, max_length=LEMFM_TTS_ARTICLE_MAX_CHARS)
+    article_id: Optional[str] = None
+    article_url: Optional[str] = None
+    title: Optional[str] = None
+    speaker: conint(ge=0, le=1) = 0
+    preset: Literal["default", "less", "more"] = "default"
+    single_file: bool = True
+    crossfade_ms: conint(ge=0, le=1000) = LEMFM_TTS_CROSSFADE_MS
+
+
 # --- Auth (token == JWT_SECRET) ---
 async def require_auth(authorization: str | None = Header(default=None)):
     if not JWT_SECRET:
@@ -907,6 +919,86 @@ def _lemko_result_has_hits(result: Dict[str, Any]) -> bool:
     return False
 
 
+def _split_tts_article_text(text: str, max_chars: int) -> List[str]:
+    normalized = re.sub(r"\r\n?", "\n", text or "")
+    normalized = re.sub(r"[ \t]+", " ", normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+    if not normalized:
+        return []
+
+    chunks: List[str] = []
+    current = ""
+    parts = [part.strip() for part in re.split(r"(\n\n+|(?<=[.!?…:;])\s+)", normalized) if part.strip()]
+
+    def push_piece(piece: str) -> None:
+        nonlocal current
+        piece = piece.strip()
+        if not piece:
+            return
+        if len(piece) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            words = piece.split()
+            word_chunk = ""
+            for word in words:
+                if len(word) > max_chars:
+                    if word_chunk:
+                        chunks.append(word_chunk)
+                        word_chunk = ""
+                    for start in range(0, len(word), max_chars):
+                        chunks.append(word[start:start + max_chars])
+                    continue
+                candidate = f"{word_chunk} {word}".strip()
+                if len(candidate) <= max_chars:
+                    word_chunk = candidate
+                else:
+                    chunks.append(word_chunk)
+                    word_chunk = word
+            if word_chunk:
+                chunks.append(word_chunk)
+            return
+
+        separator = "\n\n" if current and "\n" in piece else " "
+        candidate = f"{current}{separator}{piece}".strip() if current else piece
+        if len(candidate) <= max_chars:
+            current = candidate
+            return
+        chunks.append(current)
+        current = piece
+
+    for part in parts:
+        if part.startswith("\n"):
+            continue
+        push_piece(part)
+
+    if current:
+        chunks.append(current)
+
+    return [chunk for chunk in chunks if chunk]
+
+
+def _merge_tts_waves(waves: Sequence[np.ndarray], sample_rate: int, crossfade_ms: int) -> np.ndarray:
+    if not waves:
+        raise ValueError("No audio chunks generated")
+
+    merged = np.asarray(waves[0], dtype=np.float32)
+    fade_samples = int(sample_rate * (max(0, crossfade_ms) / 1000.0))
+
+    for wav in waves[1:]:
+        next_wav = np.asarray(wav, dtype=np.float32)
+        usable_fade = min(fade_samples, len(merged), len(next_wav))
+        if usable_fade <= 0:
+            merged = np.concatenate([merged, next_wav])
+            continue
+        fade_out = np.linspace(1.0, 0.0, usable_fade, dtype=np.float32)
+        fade_in = np.linspace(0.0, 1.0, usable_fade, dtype=np.float32)
+        overlap = (merged[-usable_fade:] * fade_out) + (next_wav[:usable_fade] * fade_in)
+        merged = np.concatenate([merged[:-usable_fade], overlap, next_wav[usable_fade:]])
+
+    return np.clip(merged, -1.0, 1.0)
+
+
 def _ensure_tts_runtime() -> tuple[StyleTTS2Engine, concurrent.futures.ThreadPoolExecutor]:
     global tts_engine, tts_executor
     base_env = os.getenv("STYLE_TTS2_DIR")
@@ -940,6 +1032,139 @@ async def _run_tts_synthesis(payload: TTSSynthesizeRequest, output_path: Path) -
         output_path=output_path,
     )
     return await loop.run_in_executor(executor, func)
+
+
+def _synthesize_lemfm_article_to_file(
+    engine: StyleTTS2Engine,
+    payload: LemfmArticleTTSRequest,
+    output_path: Path,
+) -> Tuple[SynthesisResult, int]:
+    chunks = _split_tts_article_text(payload.text, LEMFM_TTS_CHUNK_MAX_CHARS)
+    if not chunks:
+        raise ValueError("Article text is empty")
+    if not payload.single_file:
+        raise ValueError("LEM.fm article TTS requires single_file=true")
+
+    sample_rate = 24000
+    elapsed_total = 0.0
+    refs_used = []
+    waves: List[np.ndarray] = []
+
+    with engine._synth_lock:
+        for chunk in chunks:
+            wav, chunk_sample_rate, elapsed, _duration, chunk_refs = engine._synthesize_waveform(
+                text=chunk,
+                speaker=int(payload.speaker),
+                preset=payload.preset,
+                num_refs=TTS_NUM_REFS,
+                trim_in_ms=TTS_TRIM_IN_MS,
+                trim_out_ms=TTS_TRIM_OUT_MS,
+            )
+            sample_rate = chunk_sample_rate
+            elapsed_total += elapsed
+            waves.append(wav)
+            refs_used.extend(chunk_refs)
+
+        merged = _merge_tts_waves(waves, sample_rate, int(payload.crossfade_ms))
+        output_path = output_path.expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        engine._write_m4a(merged, sample_rate, output_path)
+
+    duration = len(merged) / sample_rate if sample_rate > 0 else 0.0
+    rtf = elapsed_total / duration if duration > 0 else 0.0
+    unique_refs = list(dict.fromkeys(refs_used))
+
+    return (
+        SynthesisResult(
+            output_path=output_path,
+            elapsed_s=elapsed_total,
+            duration_s=duration,
+            sample_rate=sample_rate,
+            rtf=rtf,
+            preset=payload.preset,
+            speaker=int(payload.speaker),
+            text=payload.text,
+            refs_used=unique_refs,
+        ),
+        len(chunks),
+    )
+
+
+async def _run_lemfm_article_tts_synthesis(
+    payload: LemfmArticleTTSRequest,
+    output_path: Path,
+) -> Tuple[SynthesisResult, int]:
+    engine, executor = _ensure_tts_runtime()
+    loop = asyncio.get_running_loop()
+    func = functools.partial(_synthesize_lemfm_article_to_file, engine, payload, output_path)
+    return await loop.run_in_executor(executor, func)
+
+
+def _request_public_base_url(request: Request) -> str:
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("host") or request.url.netloc
+    return f"{proto}://{host}"
+
+
+async def _update_lemfm_tts_job(job_id: str, **values: Any) -> None:
+    async with lemfm_tts_jobs_lock:
+        job = lemfm_tts_jobs.get(job_id, {})
+        job.update(values)
+        job["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+        lemfm_tts_jobs[job_id] = job
+
+
+async def _process_lemfm_tts_job(
+    job_id: str,
+    payload: LemfmArticleTTSRequest,
+    stored_filename: str,
+    public_base_url: str,
+) -> None:
+    tmp_dir = Path(tempfile.mkdtemp(prefix="lemfm_tts_job_"))
+    output_path = tmp_dir / stored_filename
+
+    try:
+        await _update_lemfm_tts_job(job_id, status="processing")
+        async with tts_sem:
+            result, chunk_count = await _run_lemfm_article_tts_synthesis(payload, output_path)
+        LEMFM_TTS_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+        stored_path = LEMFM_TTS_AUDIO_DIR / stored_filename
+        shutil.move(str(result.output_path), stored_path)
+        audio_url = f"{public_base_url}/v1/lemfm/tts/audio/{stored_filename}"
+        await append_log(
+            {
+                "event": "lemfm_tts",
+                "article_id": payload.article_id,
+                "article_url": payload.article_url,
+                "title": payload.title,
+                "speaker": int(payload.speaker),
+                "preset": payload.preset,
+                "text_chars": len(payload.text),
+                "chunks": chunk_count,
+                "crossfade_ms": int(payload.crossfade_ms),
+                "rtf": result.rtf,
+                "duration_s": result.duration_s,
+            }
+        )
+        await _update_lemfm_tts_job(
+            job_id,
+            status="complete",
+            complete=True,
+            audio_url=audio_url,
+            chunks=chunk_count,
+            crossfade_ms=int(payload.crossfade_ms),
+            duration_s=result.duration_s,
+            rtf=result.rtf,
+        )
+    except Exception as exc:
+        await _update_lemfm_tts_job(
+            job_id,
+            status="failed",
+            complete=False,
+            message=str(exc),
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @app.post("/v1/lemko/search/pl")
@@ -1016,6 +1241,78 @@ async def lem_translate_pl(payload: LemTranslateRequest, authorization: str | No
         "attempts": result.get("attempts"),
     }
     return response_payload
+
+
+@app.post("/v1/lemfm/tts")
+async def synthesize_lemfm_article_tts(
+    payload: LemfmArticleTTSRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    endpoint = "/v1/lemfm/tts"
+    await require_auth(authorization)
+    await append_lem_tts_log(endpoint, payload.speaker, payload.text)
+
+    if not payload.single_file:
+        return _error("INVALID_REQUEST", "LEM.fm article TTS requires single_file=true", {}, 400)
+
+    chunks = _split_tts_article_text(payload.text, LEMFM_TTS_CHUNK_MAX_CHARS)
+    if not chunks:
+        return _error("INVALID_REQUEST", "Article text is empty", {}, 400)
+
+    job_id = uuid.uuid4().hex
+    article_name = _sanitize_filename(payload.article_id or payload.title or "article")
+    stored_filename = f"lemfm_{article_name}_{uuid.uuid4().hex[:8]}.m4a"
+    public_base_url = _request_public_base_url(request)
+    status_url = f"{public_base_url}/v1/lemfm/tts/jobs/{job_id}"
+
+    await _update_lemfm_tts_job(
+        job_id,
+        status="queued",
+        complete=False,
+        audio_url="",
+        message="",
+        chunks=len(chunks),
+        crossfade_ms=int(payload.crossfade_ms),
+        created_at=datetime.datetime.utcnow().isoformat() + "Z",
+    )
+
+    background_tasks.add_task(_process_lemfm_tts_job, job_id, payload, stored_filename, public_base_url)
+
+    return {
+        "complete": False,
+        "status": "queued",
+        "job_id": job_id,
+        "status_url": status_url,
+        "chunks": len(chunks),
+        "crossfade_ms": int(payload.crossfade_ms),
+    }
+
+
+@app.get("/v1/lemfm/tts/jobs/{job_id}")
+async def get_lemfm_tts_job(job_id: str):
+    async with lemfm_tts_jobs_lock:
+        job = dict(lemfm_tts_jobs.get(job_id, {}))
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job["job_id"] = job_id
+    return job
+
+
+@app.get("/v1/lemfm/tts/audio/{filename}")
+async def get_lemfm_tts_audio(filename: str):
+    safe_name = _sanitize_filename(filename)
+    if safe_name != filename:
+        raise HTTPException(status_code=404, detail="Audio not found")
+    path = LEMFM_TTS_AUDIO_DIR / safe_name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Audio not found")
+    return FileResponse(
+        path,
+        media_type="audio/mp4",
+        filename=safe_name,
+    )
 
 
 @app.post("/v1/tts")
