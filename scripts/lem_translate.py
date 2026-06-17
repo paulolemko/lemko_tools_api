@@ -7,10 +7,15 @@ import importlib.util
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
+import threading
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 
 import psycopg2
@@ -29,6 +34,13 @@ except Exception:  # pragma: no cover - API deployments use fallback implementat
     _get_connection = None  # type: ignore[assignment]
 
 DEFAULT_MODEL = "gpt-5"
+CODEX_DEFAULT_SENTINEL_MODELS = {"gpt-5", "gpt-5-mini"}
+CODEX_MODEL_ENV_VARS: Tuple[str, ...] = (
+    "LEM_TRANSLATE_CODEX_MODEL",
+    "CODEX_TRANSLATE_MODEL",
+    "CODEX_MODEL",
+)
+_CODEX_EXEC_LOCK = threading.Lock()
 
 SYSTEM_PROMPT = (
     "Jesteś tłumaczem języka łemkowskiego (nie ukraińskiego). "
@@ -419,8 +431,225 @@ def _resolved_entries_with_descriptions(
     return resolved_entries
 
 
+def _llm_provider() -> str:
+    provider = os.getenv("LEM_TRANSLATE_PROVIDER", "openai").strip().lower()
+    return provider or "openai"
+
+
+def _codex_executable() -> str:
+    configured = os.getenv("CODEX_CLI_PATH", "codex").strip() or "codex"
+    if os.path.isabs(configured):
+        if os.access(configured, os.X_OK):
+            return configured
+        raise RuntimeError(f"Codex CLI nie jest wykonywalny: {configured}")
+    resolved = shutil.which(configured)
+    if resolved:
+        return resolved
+    raise RuntimeError(f"Nie znaleziono Codex CLI w PATH: {configured}")
+
+
+def _codex_timeout_seconds() -> int:
+    raw = os.getenv("CODEX_CLI_TIMEOUT_SECONDS", "900").strip()
+    try:
+        return max(30, int(raw))
+    except ValueError:
+        return 900
+
+
+def _configured_codex_model() -> Optional[str]:
+    for name in CODEX_MODEL_ENV_VARS:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return None
+
+
+def _codex_model_arg(model: Optional[str]) -> Optional[str]:
+    configured = _configured_codex_model()
+    if configured:
+        return configured
+    requested = (model or "").strip()
+    if not requested:
+        return None
+    if requested in CODEX_DEFAULT_SENTINEL_MODELS:
+        return None
+    return requested
+
+
+def _effective_model_label(model: str) -> str:
+    if _llm_provider() != "codex":
+        return model
+    return _codex_model_arg(model) or "codex-cli-default"
+
+
+def _copy_codex_auth(codex_home: Path) -> None:
+    auth_dir = Path(os.getenv("CODEX_AUTH_DIR", "/run/codex-auth")).expanduser()
+    auth_file = Path(os.getenv("CODEX_AUTH_FILE", str(auth_dir / "auth.json"))).expanduser()
+    if not auth_file.is_file():
+        fallback = Path.home() / ".codex" / "auth.json"
+        if fallback.is_file():
+            auth_file = fallback
+        else:
+            raise RuntimeError(
+                "Brak pliku auth Codex. Ustaw CODEX_AUTH_DIR albo CODEX_AUTH_FILE."
+            )
+
+    codex_home.mkdir(parents=True, exist_ok=True)
+    target_auth = codex_home / "auth.json"
+    shutil.copy2(auth_file, target_auth)
+    target_auth.chmod(0o600)
+
+    config_file = Path(os.getenv("CODEX_CONFIG_FILE", str(auth_dir / "config.toml"))).expanduser()
+    if config_file.is_file():
+        target_config = codex_home / "config.toml"
+        shutil.copy2(config_file, target_config)
+        target_config.chmod(0o600)
+
+
+def _schema_from_response_format(response_format: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(response_format, dict):
+        return None
+    json_schema = response_format.get("json_schema")
+    if isinstance(json_schema, dict) and isinstance(json_schema.get("schema"), dict):
+        return _schema_for_codex(cast(Dict[str, Any], json_schema["schema"]))
+    return None
+
+
+def _schema_for_codex(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized = {
+            key: _schema_for_codex(item)
+            for key, item in value.items()
+            if key not in {"uniqueItems"}
+        }
+        properties = sanitized.get("properties")
+        if isinstance(properties, dict):
+            sanitized["required"] = list(properties.keys())
+        return sanitized
+    if isinstance(value, list):
+        return [_schema_for_codex(item) for item in value]
+    return value
+
+
+def _messages_to_codex_prompt(messages: Sequence[Dict[str, str]], schema: Optional[Dict[str, Any]]) -> str:
+    lines: List[str] = [
+        "Pracujesz jako backendowy model językowy dla API tłumacza.",
+        "Nie uruchamiaj komend, nie czytaj plików i nie modyfikuj środowiska.",
+        "Odpowiedz wyłącznie treścią końcową wymaganą przez rozmowę poniżej.",
+    ]
+    if schema:
+        lines.append("Odpowiedź musi być poprawnym JSON zgodnym z dołączonym schema; bez Markdown i komentarzy.")
+    else:
+        lines.append("Odpowiedź ma być bez Markdown i bez dodatkowych komentarzy.")
+
+    for message in messages:
+        role = (message.get("role") or "user").upper()
+        content = message.get("content") or ""
+        lines.append(f"{role}:\n{content}")
+    return "\n\n".join(lines)
+
+
+def _codex_error_tail(text: Optional[str]) -> str:
+    if not text:
+        return ""
+    cleaned = text.strip()
+    if len(cleaned) <= 1200:
+        return cleaned
+    return cleaned[-1200:]
+
+
+def codex_complete_text(
+    prompt: str,
+    *,
+    model: Optional[str] = None,
+    schema: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Run Codex CLI once and return the final assistant message."""
+    executable = _codex_executable()
+    timeout = _codex_timeout_seconds()
+
+    with tempfile.TemporaryDirectory(prefix="lemko-codex-") as tmp:
+        base = Path(tmp)
+        workdir = base / "work"
+        codex_home = base / "codex-home"
+        workdir.mkdir(parents=True, exist_ok=True)
+        _copy_codex_auth(codex_home)
+
+        output_path = base / "last-message.txt"
+        cmd = [
+            executable,
+            "exec",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--sandbox",
+            "read-only",
+            "--cd",
+            str(workdir),
+            "--color",
+            "never",
+            "-o",
+            str(output_path),
+        ]
+        codex_model = _codex_model_arg(model)
+        if codex_model:
+            cmd.extend(["-m", codex_model])
+
+        if schema:
+            schema_path = base / "output-schema.json"
+            schema_path.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
+            cmd.extend(["--output-schema", str(schema_path)])
+
+        cmd.append("-")
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["HOME"] = str(base / "home")
+        env.setdefault("NO_COLOR", "1")
+        Path(env["HOME"]).mkdir(parents=True, exist_ok=True)
+
+        try:
+            with _CODEX_EXEC_LOCK:
+                completed = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=timeout,
+                    env=env,
+                    check=False,
+                )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Codex CLI przekroczył limit czasu {timeout}s.") from exc
+
+        if completed.returncode != 0:
+            details = _codex_error_tail(completed.stderr or completed.stdout)
+            if details:
+                raise RuntimeError(f"Codex CLI zakończył się błędem: {details}")
+            raise RuntimeError(f"Codex CLI zakończył się kodem {completed.returncode}.")
+
+        if output_path.is_file():
+            output = output_path.read_text(encoding="utf-8").strip()
+        else:
+            output = (completed.stdout or "").strip()
+        if not output:
+            raise RuntimeError("Codex CLI zwrócił pustą odpowiedź.")
+        return output
+
+
+def _create_codex_response(payload: Dict[str, Any]) -> SimpleNamespace:
+    messages = payload.get("input")
+    if not isinstance(messages, list):
+        raise RuntimeError("Niepoprawny payload LLM: brak listy input.")
+    schema = _schema_from_response_format(payload.get("response_format"))
+    prompt = _messages_to_codex_prompt(cast(List[Dict[str, str]], messages), schema)
+    output = codex_complete_text(prompt, model=str(payload.get("model") or ""), schema=schema)
+    return SimpleNamespace(output_text=output)
+
+
 def _call_llm(
-    client: "OpenAI",
+    client: Optional["OpenAI"],
     messages: List[Dict[str, str]],
     *,
     schema: Dict[str, Any],
@@ -806,11 +1035,19 @@ def lem_translate(
     cleaned = _clean_optional_text(text)
     if not cleaned:
         raise ValueError("Tekst do tłumaczenia nie może być pusty.")
-    if OpenAI is None:  # pragma: no cover - runtime guard
-        raise RuntimeError("Pakiet openai nie jest zainstalowany.")
 
-    _ensure_openai_key()
-    client = OpenAI()  # pragma: no cover - network object
+    provider = _llm_provider()
+    if provider == "openai":
+        if OpenAI is None:  # pragma: no cover - runtime guard
+            raise RuntimeError("Pakiet openai nie jest zainstalowany.")
+        _ensure_openai_key()
+        client: Optional["OpenAI"] = OpenAI()  # pragma: no cover - network object
+    elif provider == "codex":
+        client = None
+    else:
+        raise RuntimeError(f"Nieobsługiwany provider LLM: {provider!r}")
+
+    effective_model = _effective_model_label(model)
     resolved_service_tier = _normalize_service_tier(service_tier) or _default_service_tier()
 
     messages: List[Dict[str, str]] = [
@@ -840,7 +1077,7 @@ def lem_translate(
             "resolved_unknown_words": [],
             "missing_words": [],
             "attempts": 1,
-            "model": model,
+            "model": effective_model,
             "semantic_description_pl": [],
         }
 
@@ -892,13 +1129,21 @@ def lem_translate(
         "resolved_unknown_words": resolved,
         "missing_words": missing,
         "attempts": 2,
-        "model": model,
+        "model": effective_model,
         "semantic_description_pl": semantic_description_pl,
     }
 
 
-def _create_response(client: "OpenAI", payload: Dict[str, Any]) -> Any:
+def _create_response(client: Optional["OpenAI"], payload: Dict[str, Any]) -> Any:
     """Call OpenAI Responses API with graceful fallbacks for unsupported kwargs."""
+    provider = _llm_provider()
+    if provider == "codex":
+        return _create_codex_response(payload)
+    if provider != "openai":
+        raise RuntimeError(f"Nieobsługiwany provider LLM: {provider!r}")
+    if client is None:
+        raise RuntimeError("Brak klienta OpenAI.")
+
     attempt_payload = dict(payload)
     fallback_keys = ("response_format", "service_tier")
     while True:

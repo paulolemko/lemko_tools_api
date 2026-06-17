@@ -2,7 +2,7 @@ services:
   asr:
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/readyz"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).read()\""]
       interval: 20s
       timeout: 5s
       retries: 5
@@ -19,6 +19,11 @@ services:
       LEM_TRANSLATE_LOG_PATH: /app/logs/lemko_translate_log.csv
       LEM_TTS_LOG_PATH: /app/logs/lemko_tts_log.csv
       VOCAB_JSON_DIR: /app/vocab_json
+      LEM_TRANSLATE_PROVIDER: codex
+      LEM_SEARCH_LLM_PROVIDER: codex
+      CODEX_CLI_PATH: /usr/local/bin/codex
+      CODEX_AUTH_DIR: /run/codex-auth
+      CODEX_CLI_TIMEOUT_SECONDS: "900"
     ports:
       - "127.0.0.1:8000:8000"   # słucha tylko na hoście (loopback)
     volumes:
@@ -27,6 +32,9 @@ services:
       - ./models:/app/models:ro
       - ./vocab_json:/app/vocab_json:ro
       - ./morphology_structure_pl_lem_eng:/app/morphology_structure_pl_lem_eng:ro
+      - /home/webserver/bin/codex:/usr/local/bin/codex:ro
+      - /home/webserver/.codex/auth.json:/run/codex-auth/auth.json:ro
+      - /home/webserver/.codex/config.toml:/run/codex-auth/config.toml:ro
     networks: [web]
   postgres:
     image: postgres:16

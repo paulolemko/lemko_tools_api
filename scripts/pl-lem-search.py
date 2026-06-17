@@ -24,6 +24,11 @@ try:  # pragma: no cover - optional dependency
 except ImportError:  # pragma: no cover
     OpenAI = None  # type: ignore
 
+try:  # pragma: no cover - optional shared Codex CLI wrapper
+    from lem_translate import codex_complete_text  # type: ignore
+except Exception:  # pragma: no cover
+    codex_complete_text = None  # type: ignore
+
 try:
     from importlib import import_module
 
@@ -439,22 +444,8 @@ def llm_suggest_base_form(
     model: str = "gpt-5-mini",
     debug: bool = False,
 ) -> Optional[str]:
-    if OpenAI is None or _ensure_openai_key is None:  # pragma: no cover
-        return None
     cleaned = word.strip()
     if not cleaned:
-        return None
-    try:  # pragma: no cover
-        _ensure_openai_key()
-    except Exception as exc:
-        if debug:
-            print(f"[LLM error] Nie ustawiono klucza: {exc}")
-        return None
-    try:
-        client = OpenAI()
-    except Exception as exc:  # pragma: no cover
-        if debug:
-            print(f"[LLM error] Nie udało się utworzyć klienta: {exc}")
         return None
 
     lang_config = LANG_CONFIG.get(lang, LANG_CONFIG["pl"])
@@ -463,30 +454,59 @@ def llm_suggest_base_form(
     if debug:
         print(f"[LLM prompt] {prompt}")
 
-    try:
-        response = client.responses.create(  # type: ignore[attr-defined]
-            model=model,
-            input=prompt,
-        )
-    except Exception as exc:  # pragma: no cover
-        if debug:
-            print(f"[LLM error] Zapytanie nie powiodło się: {exc}")
-        return None
-
-    if debug:
+    provider = os.getenv("LEM_SEARCH_LLM_PROVIDER", os.getenv("LEM_TRANSLATE_PROVIDER", "openai")).strip().lower()
+    if provider == "codex":
+        if codex_complete_text is None:
+            if debug:
+                print("[LLM error] Wrapper Codex CLI jest niedostępny.")
+            return None
         try:
-            print(f"[LLM output object] {response.output}")
-        except Exception:
-            pass
+            candidate = codex_complete_text(prompt, model=model)
+        except Exception as exc:  # pragma: no cover
+            if debug:
+                print(f"[LLM error] Zapytanie Codex CLI nie powiodło się: {exc}")
+            return None
+    else:
+        if OpenAI is None or _ensure_openai_key is None:  # pragma: no cover
+            return None
+        try:  # pragma: no cover
+            _ensure_openai_key()
+        except Exception as exc:
+            if debug:
+                print(f"[LLM error] Nie ustawiono klucza: {exc}")
+            return None
+        try:
+            client = OpenAI()
+        except Exception as exc:  # pragma: no cover
+            if debug:
+                print(f"[LLM error] Nie udało się utworzyć klienta: {exc}")
+            return None
 
-    text = getattr(response, "output_text", None)
-    if isinstance(text, list):
-        text = "\n".join(part for part in text if part)
-    if not text:
+        try:
+            response = client.responses.create(  # type: ignore[attr-defined]
+                model=model,
+                input=prompt,
+            )
+        except Exception as exc:  # pragma: no cover
+            if debug:
+                print(f"[LLM error] Zapytanie nie powiodło się: {exc}")
+            return None
+
         if debug:
-            print("[LLM info] Pusta odpowiedź")
-        return None
-    candidate = str(text).strip()
+            try:
+                print(f"[LLM output object] {response.output}")
+            except Exception:
+                pass
+
+        text = getattr(response, "output_text", None)
+        if isinstance(text, list):
+            text = "\n".join(part for part in text if part)
+        if not text:
+            if debug:
+                print("[LLM info] Pusta odpowiedź")
+            return None
+        candidate = str(text).strip()
+
     if debug:
         print(f"[LLM raw response] {candidate}")
     candidate = candidate.splitlines()[0].strip()
