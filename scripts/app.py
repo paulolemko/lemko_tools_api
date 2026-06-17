@@ -2,7 +2,7 @@
 # app.py — API (odchudzone) korzystające z ASREngine
 # =============================
 
-import os, json, asyncio, datetime, uuid, importlib.util, threading, sys, csv, tempfile, shutil, functools, concurrent.futures, re, time
+import os, json, asyncio, datetime, uuid, importlib.util, threading, sys, csv, tempfile, shutil, functools, concurrent.futures, re, time, urllib.error, urllib.parse, urllib.request
 from typing import Dict, Any, Optional, List, Set, Sequence, Tuple, Literal
 from pathlib import Path
 import torchaudio
@@ -129,6 +129,13 @@ _pl_lem_search_lock = threading.Lock()
 LEM_TRANSLATE_ENABLED = os.getenv("LEM_TRANSLATE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 _lem_translate_model_env = os.getenv("LEM_TRANSLATE_MODEL", "").strip()
 LEM_TRANSLATE_DEFAULT_MODEL = _lem_translate_model_env or LEM_TRANSLATE_BASE_MODEL
+DEEPL_API_BASE_URL = os.getenv("DEEPL_API_BASE_URL", "").strip()
+DEEPL_TIMEOUT_SECONDS = max(1, _env_int("DEEPL_TIMEOUT_SECONDS", 30))
+DEEPL_LANG_CACHE_TTL_SECONDS = max(60, _env_int("DEEPL_LANG_CACHE_TTL_SECONDS", 3600))
+DEEPL_TARGET_LANG_RE = re.compile(r"^[A-Z]{2,3}(?:-[A-Z0-9]{2,8})?$")
+POLISH_TARGET_LANGUAGE = {"language": "PL", "name": "Polish"}
+_deepl_target_languages_cache: Optional[Tuple[float, List[Dict[str, str]]]] = None
+_deepl_target_languages_lock = threading.Lock()
 
 
 def _client_rate_limit_key(request: Request) -> str:
@@ -506,6 +513,7 @@ class LemSearchRequest(BaseModel):
 
 class LemTranslateRequest(BaseModel):
     text: str
+    target_lang: Optional[str] = None
 
 
 class TTSSynthesizeRequest(BaseModel):
@@ -719,6 +727,171 @@ def _error(code: str, message: str, details: dict, status: int):
         message = _public_error_message(status)
         details = {}
     return JSONResponse(status_code=status, content={"error": {"code": code, "message": message, "details": details}})
+
+
+def _read_secret_from_env_or_file(value_names: Sequence[str], file_names: Sequence[str]) -> Optional[str]:
+    for name in value_names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+
+    for name in file_names:
+        path = os.getenv(name, "").strip()
+        if not path:
+            continue
+        try:
+            content = Path(path).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise RuntimeError(f"Nie można odczytać pliku sekretu {name}: {exc}") from exc
+        if content:
+            return content
+
+    return None
+
+
+def _deepl_auth_key() -> Optional[str]:
+    return _read_secret_from_env_or_file(
+        ("DEEPL_AUTH_KEY", "DEEPL_API_KEY"),
+        ("DEEPL_AUTH_KEY_FILE", "DEEPL_API_KEY_FILE"),
+    )
+
+
+def _deepl_base_url(auth_key: str) -> str:
+    configured = DEEPL_API_BASE_URL.rstrip("/")
+    if configured:
+        return configured
+    if auth_key.endswith(":fx"):
+        return "https://api-free.deepl.com/v2"
+    return "https://api.deepl.com/v2"
+
+
+def _deepl_json_request(
+    path: str,
+    *,
+    auth_key: str,
+    method: str = "GET",
+    body: Optional[Dict[str, Any]] = None,
+    query: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any] | List[Any]:
+    base_url = _deepl_base_url(auth_key)
+    url = f"{base_url}/{path.lstrip('/')}"
+    if query:
+        url = f"{url}?{urllib.parse.urlencode(query)}"
+
+    data = None
+    headers = {
+        "Authorization": f"DeepL-Auth-Key {auth_key}",
+        "Accept": "application/json",
+    }
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=DEEPL_TIMEOUT_SECONDS) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            error_body = exc.read().decode("utf-8")
+            parsed = json.loads(error_body) if error_body else {}
+            detail = str(parsed.get("message") or parsed.get("detail") or "").strip()
+        except Exception:
+            detail = ""
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"DeepL API zwróciło status {exc.code}{suffix}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Nie można połączyć się z DeepL API: {exc.reason}") from exc
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("DeepL API zwróciło niepoprawny JSON.") from exc
+
+
+def _normalize_target_lang(raw_target_lang: Optional[str]) -> str:
+    target_lang = (raw_target_lang or "PL").strip().replace("_", "-").upper()
+    if not target_lang:
+        return "PL"
+    if not DEEPL_TARGET_LANG_RE.match(target_lang):
+        raise ValueError("Pole 'target_lang' ma niepoprawny format.")
+    return target_lang
+
+
+def _with_polish_target_language(languages: Sequence[Dict[str, Any]]) -> List[Dict[str, str]]:
+    normalized: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+
+    for item in [POLISH_TARGET_LANGUAGE, *languages]:
+        language = str(item.get("language") or "").strip().upper()
+        name = str(item.get("name") or language).strip() or language
+        if not language or language in seen:
+            continue
+        normalized.append({"language": language, "name": name})
+        seen.add(language)
+
+    return normalized
+
+
+def _get_deepl_target_languages() -> List[Dict[str, str]]:
+    global _deepl_target_languages_cache
+
+    auth_key = _deepl_auth_key()
+    if not auth_key:
+        return [POLISH_TARGET_LANGUAGE]
+
+    now = time.monotonic()
+    with _deepl_target_languages_lock:
+        if _deepl_target_languages_cache:
+            cached_at, cached_languages = _deepl_target_languages_cache
+            if now - cached_at < DEEPL_LANG_CACHE_TTL_SECONDS:
+                return cached_languages
+
+        response = _deepl_json_request(
+            "languages",
+            auth_key=auth_key,
+            query={"type": "target"},
+        )
+        if not isinstance(response, list):
+            raise RuntimeError("DeepL API zwróciło niepoprawną listę języków.")
+
+        languages = _with_polish_target_language([item for item in response if isinstance(item, dict)])
+        _deepl_target_languages_cache = (now, languages)
+        return languages
+
+
+def _translate_polish_with_deepl(text: str, target_lang: str) -> str:
+    auth_key = _deepl_auth_key()
+    if not auth_key:
+        raise RuntimeError("Brak konfiguracji DeepL. Ustaw DEEPL_AUTH_KEY albo DEEPL_API_KEY.")
+
+    response = _deepl_json_request(
+        "translate",
+        auth_key=auth_key,
+        method="POST",
+        body={
+            "text": [text],
+            "source_lang": "PL",
+            "target_lang": target_lang,
+            "preserve_formatting": True,
+        },
+    )
+    if not isinstance(response, dict):
+        raise RuntimeError("DeepL API zwróciło niepoprawną odpowiedź.")
+
+    translations = response.get("translations")
+    if not isinstance(translations, list) or not translations:
+        raise RuntimeError("DeepL API nie zwróciło tłumaczenia.")
+
+    translated_text = translations[0].get("text") if isinstance(translations[0], dict) else None
+    if not isinstance(translated_text, str):
+        raise RuntimeError("DeepL API zwróciło tłumaczenie w niepoprawnym formacie.")
+    return translated_text
+
+
+def _deepl_language_is_supported(target_lang: str, languages: Sequence[Dict[str, str]]) -> bool:
+    return any(item.get("language") == target_lang for item in languages)
 
 
 def _public_job_error(error: Optional[str]) -> Optional[str]:
@@ -1203,6 +1376,24 @@ async def lemko_search(payload: LemSearchRequest, authorization: str | None = He
     return result
 
 
+@app.get("/v1/lemko/translate/languages")
+async def lem_translate_languages(authorization: str | None = Header(default=None)):
+    await require_auth(authorization)
+    try:
+        languages = await asyncio.to_thread(_get_deepl_target_languages)
+    except RuntimeError as exc:
+        return _error("DEEPL_LANGUAGES_FAILED", str(exc), {}, 502)
+    except Exception as exc:
+        return _error("DEEPL_LANGUAGES_ERROR", "Nie udało się pobrać listy języków.", {"reason": str(exc)}, 500)
+
+    return {
+        "source_language": {"language": "LEM", "name": "Lemko"},
+        "intermediate_language": POLISH_TARGET_LANGUAGE,
+        "target_languages": languages,
+        "deepl_available": bool(_deepl_auth_key()),
+    }
+
+
 @app.post("/v1/lemko/translate/pl")
 async def lem_translate_pl(payload: LemTranslateRequest, authorization: str | None = Header(default=None)):
     endpoint = "/v1/lemko/translate/pl"
@@ -1215,6 +1406,32 @@ async def lem_translate_pl(payload: LemTranslateRequest, authorization: str | No
     if not text:
         await append_lem_translate_log(endpoint, payload.text, "")
         return _error("INVALID_REQUEST", "Pole 'text' nie może być puste.", {"field": "text"}, 400)
+
+    try:
+        target_lang = _normalize_target_lang(payload.target_lang)
+    except ValueError as exc:
+        await append_lem_translate_log(endpoint, text, "")
+        return _error("INVALID_REQUEST", str(exc), {"field": "target_lang"}, 400)
+
+    target_languages: Optional[List[Dict[str, str]]] = None
+    if target_lang != "PL":
+        try:
+            target_languages = await asyncio.to_thread(_get_deepl_target_languages)
+        except RuntimeError as exc:
+            await append_lem_translate_log(endpoint, text, "")
+            return _error("DEEPL_LANGUAGES_FAILED", str(exc), {}, 502)
+        except Exception as exc:
+            await append_lem_translate_log(endpoint, text, "")
+            return _error("DEEPL_LANGUAGES_ERROR", "Nie udało się zweryfikować języka docelowego.", {"reason": str(exc)}, 500)
+
+        if not _deepl_language_is_supported(target_lang, target_languages):
+            await append_lem_translate_log(endpoint, text, "")
+            return _error(
+                "UNSUPPORTED_TARGET_LANGUAGE",
+                "Nieobsługiwany język docelowy.",
+                {"field": "target_lang", "target_lang": target_lang},
+                400,
+            )
 
     model = LEM_TRANSLATE_DEFAULT_MODEL
 
@@ -1230,10 +1447,34 @@ async def lem_translate_pl(payload: LemTranslateRequest, authorization: str | No
         await append_lem_translate_log(endpoint, text, "")
         return _error("LEM_TRANSLATE_ERROR", "Nie udało się wykonać tłumaczenia.", {"reason": str(exc)}, 500)
 
-    translated_text = result.get("translated_text")
+    translated_text_pl = result.get("translated_text") or ""
+    translated_text = translated_text_pl
+    deepl_applied = False
+
+    if target_lang != "PL" and translated_text_pl:
+        try:
+            translated_text = await asyncio.to_thread(_translate_polish_with_deepl, translated_text_pl, target_lang)
+            deepl_applied = True
+        except RuntimeError as exc:
+            await append_lem_translate_log(endpoint, text, "")
+            return _error("DEEPL_TRANSLATE_FAILED", str(exc), {"target_lang": target_lang}, 502)
+        except Exception as exc:
+            await append_lem_translate_log(endpoint, text, "")
+            return _error(
+                "DEEPL_TRANSLATE_ERROR",
+                "Nie udało się wykonać tłumaczenia DeepL.",
+                {"reason": str(exc), "target_lang": target_lang},
+                500,
+            )
+
     await append_lem_translate_log(endpoint, text, translated_text)
     response_payload = {
         "translated_text": translated_text,
+        "translated_text_pl": translated_text_pl,
+        "source_lang": "LEM",
+        "intermediate_lang": "PL",
+        "target_lang": target_lang,
+        "deepl_applied": deepl_applied,
         "resolved_unknown_words": result.get("resolved_unknown_words", []),
         "semantic_description_pl": result.get("semantic_description_pl", []),
         "missing_words": result.get("missing_words", []),
