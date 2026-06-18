@@ -50,7 +50,7 @@ sentencepiece==0.2.1
 soundfile==0.13.1
 librosa==0.11.0
 numpy==1.26.4
-numba==0.61.2
+numba==0.65.1
 llvmlite==0.44.0
 munch==4.0.0
 phonemizer==3.2.1
