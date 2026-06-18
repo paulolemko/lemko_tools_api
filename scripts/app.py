@@ -58,6 +58,10 @@ LEM_TRANSLATE_LOG_PATH = os.getenv("LEM_TRANSLATE_LOG_PATH", "lemko_translate_lo
 LEM_TRANSLATE_LOG_HEADERS = ("timestamp", "endpoint", "query", "result_text")
 LEM_TTS_LOG_PATH = os.getenv("LEM_TTS_LOG_PATH", "lemko_tts_log.csv")
 LEM_TTS_LOG_HEADERS = ("timestamp", "endpoint", "speaker", "text")
+LEM_AUTOCORRECT_MAX_TEXT_CHARS = max(1000, _env_int("LEM_AUTOCORRECT_MAX_TEXT_CHARS", 20000))
+LEM_AUTOCORRECT_DEFAULT_MAX_SUGGESTIONS = max(1, _env_int("LEM_AUTOCORRECT_DEFAULT_MAX_SUGGESTIONS", 5))
+LEM_AUTOCORRECT_MIN_WORD_LEN = max(1, _env_int("LEM_AUTOCORRECT_MIN_WORD_LEN", 2))
+LEM_AUTOCORRECT_WORD_RE = re.compile(r"[^\W\d_]+(?:['\u2019\u02bc-][^\W\d_]+)*", re.UNICODE)
 ENVIRONMENT = os.getenv("ENVIRONMENT", os.getenv("APP_ENV", "development")).strip().lower()
 PRODUCTION_MODE = _env_bool("PRODUCTION_MODE", ENVIRONMENT in {"prod", "production"})
 CORS_ALLOW_ORIGINS = [o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()]
@@ -271,6 +275,189 @@ def _run_lem_search(query: str) -> Dict[str, Any]:
         "query": query,
         "groups": groups_json,
         "has_results": has_results,
+    }
+
+
+def _normalize_autocorrect_word(word: str) -> str:
+    return (word or "").strip().casefold().replace("\u2019", "'").replace("\u02bc", "'")
+
+
+def _autocorrect_letter_count(word: str) -> int:
+    return sum(1 for char in word if char.isalpha())
+
+
+def _tokenize_autocorrect_words(text: str, min_word_len: int) -> List[Dict[str, Any]]:
+    tokens: List[Dict[str, Any]] = []
+    for match in LEM_AUTOCORRECT_WORD_RE.finditer(text or ""):
+        token = match.group(0)
+        if _autocorrect_letter_count(token) < min_word_len:
+            continue
+        tokens.append(
+            {
+                "text": token,
+                "start": match.start(),
+                "end": match.end(),
+                "normalized": _normalize_autocorrect_word(token),
+            }
+        )
+    return tokens
+
+
+def _autocorrect_headword(module: Any, term: Any) -> str:
+    raw = getattr(term, "base_form", "") or ""
+    try:
+        headword, _roman = module.split_roman_suffix(raw)
+    except Exception:
+        headword = raw
+    return (headword or raw).strip()
+
+
+def _autocorrect_known_match(module: Any, conn: Any, word: str) -> Optional[Dict[str, Any]]:
+    terms = module.fetch_terms_by_base_form(conn, word)
+    if terms:
+        return {
+            "status": "known",
+            "match_type": "base_form",
+            "headword": _autocorrect_headword(module, terms[0]),
+            "term_id": getattr(terms[0], "term_id", None),
+        }
+
+    form_result = module.fetch_term_by_form(conn, word)
+    if form_result:
+        term, _form_match = form_result
+        return {
+            "status": "known",
+            "match_type": "inflected_form",
+            "headword": _autocorrect_headword(module, term),
+            "term_id": getattr(term, "term_id", None),
+        }
+
+    return None
+
+
+def _autocorrect_candidate_payload(
+    module: Any,
+    conn: Any,
+    candidate: str,
+    rank: int,
+) -> Optional[Dict[str, Any]]:
+    candidate = (candidate or "").strip()
+    if not candidate:
+        return None
+
+    terms = module.fetch_terms_by_base_form(conn, candidate)
+    if terms:
+        term = terms[0]
+        return {
+            "text": candidate,
+            "headword": _autocorrect_headword(module, term),
+            "term_id": getattr(term, "term_id", None),
+            "match_type": "base_form",
+            "rank": rank,
+            "confidence": round(1.0 / max(rank, 1), 4),
+        }
+
+    form_result = module.fetch_term_by_form(conn, candidate)
+    if form_result:
+        term, _form_match = form_result
+        return {
+            "text": candidate,
+            "headword": _autocorrect_headword(module, term),
+            "term_id": getattr(term, "term_id", None),
+            "match_type": "inflected_form",
+            "rank": rank,
+            "confidence": round(1.0 / max(rank, 1), 4),
+        }
+
+    return None
+
+
+def _run_lem_autocorrect(
+    text: str,
+    *,
+    max_suggestions: int,
+    min_word_len: int,
+    include_known: bool,
+) -> Dict[str, Any]:
+    _ensure_lem_search_loaded()
+    if _lem_search_error:
+        raise RuntimeError(_lem_search_error)
+    assert _lem_search_resources is not None
+
+    module = _lem_search_resources["module"]
+    similar_args = dict(_lem_search_resources["similar_args"])
+    similar_args["limit"] = max(max_suggestions * 4, max_suggestions, similar_args.get("limit", 10))
+
+    tokens = _tokenize_autocorrect_words(text, min_word_len)
+    unique_words = list(dict.fromkeys(token["normalized"] for token in tokens))
+    cache: Dict[str, Dict[str, Any]] = {}
+
+    with module._get_connection() as conn:
+        for token in tokens:
+            key = token["normalized"]
+            if key in cache:
+                continue
+
+            word = token["text"]
+            known = _autocorrect_known_match(module, conn, word)
+            if known:
+                cache[key] = {**known, "suggestions": []}
+                continue
+
+            raw_candidates = module.find_similar_candidates(query=word, **similar_args)
+            suggestions: List[Dict[str, Any]] = []
+            seen_suggestions: Set[str] = set()
+            for candidate in raw_candidates:
+                normalized_candidate = _normalize_autocorrect_word(candidate)
+                if not normalized_candidate or normalized_candidate == key or normalized_candidate in seen_suggestions:
+                    continue
+                payload = _autocorrect_candidate_payload(module, conn, candidate, len(suggestions) + 1)
+                if not payload:
+                    continue
+                suggestions.append(payload)
+                seen_suggestions.add(normalized_candidate)
+                if len(suggestions) >= max_suggestions:
+                    break
+
+            cache[key] = {
+                "status": "unknown",
+                "match_type": None,
+                "headword": None,
+                "term_id": None,
+                "suggestions": suggestions,
+            }
+
+    response_tokens: List[Dict[str, Any]] = []
+    issues: List[Dict[str, Any]] = []
+    for token in tokens:
+        entry = cache[token["normalized"]]
+        token_payload = {
+            **token,
+            "status": entry["status"],
+            "match_type": entry.get("match_type"),
+            "headword": entry.get("headword"),
+            "term_id": entry.get("term_id"),
+            "suggestions": entry.get("suggestions", []),
+        }
+        if include_known or token_payload["status"] != "known":
+            response_tokens.append(token_payload)
+        if token_payload["status"] != "known":
+            issues.append(token_payload)
+
+    stats = {
+        "tokens_checked": len(tokens),
+        "unique_words_checked": len(unique_words),
+        "unknown_tokens": len(issues),
+        "unknown_unique_words": sum(1 for key in unique_words if cache.get(key, {}).get("status") != "known"),
+        "tokens_with_suggestions": sum(1 for token in issues if token.get("suggestions")),
+    }
+
+    return {
+        "text": text,
+        "tokens": response_tokens,
+        "issues": issues,
+        "stats": stats,
+        "has_issues": bool(issues),
     }
 
 
@@ -515,6 +702,13 @@ def _run_pl_lem_translations(query: str, lang: str) -> Dict[str, Any]:
 
 class LemSearchRequest(BaseModel):
     text: str
+
+
+class LemAutocorrectRequest(BaseModel):
+    text: constr(min_length=1, max_length=LEM_AUTOCORRECT_MAX_TEXT_CHARS)
+    max_suggestions: Optional[conint(ge=0, le=20)] = None
+    min_word_len: Optional[conint(ge=1, le=20)] = None
+    include_known: bool = True
 
 
 class LemTranslateRequest(BaseModel):
@@ -1379,6 +1573,41 @@ async def lemko_search(payload: LemSearchRequest, authorization: str | None = He
         return _error("LEM_SEARCH_ERROR", "Nic nie znaleziono.", {"reason": str(exc)}, 500)
 
     await append_lem_search_log(endpoint, text, "found" if _lemko_result_has_hits(result) else "failed")
+    return result
+
+
+@app.post("/v1/lemko/autocorrect")
+async def lemko_autocorrect(payload: LemAutocorrectRequest, authorization: str | None = Header(default=None)):
+    endpoint = "/v1/lemko/autocorrect"
+    await require_auth(authorization)
+    if not LEM_SEARCH_ENABLED:
+        return _error("LEM_SEARCH_DISABLED", "Lemko dictionary search is disabled.", {}, 503)
+
+    text = payload.text or ""
+    if not text.strip():
+        return _error("INVALID_REQUEST", "Field 'text' cannot be empty.", {"field": "text"}, 400)
+
+    max_suggestions = payload.max_suggestions
+    if max_suggestions is None:
+        max_suggestions = LEM_AUTOCORRECT_DEFAULT_MAX_SUGGESTIONS
+    min_word_len = payload.min_word_len
+    if min_word_len is None:
+        min_word_len = LEM_AUTOCORRECT_MIN_WORD_LEN
+
+    try:
+        result = await asyncio.to_thread(
+            _run_lem_autocorrect,
+            text,
+            max_suggestions=max(0, min(20, int(max_suggestions))),
+            min_word_len=max(1, min(20, int(min_word_len))),
+            include_known=bool(payload.include_known),
+        )
+    except RuntimeError as exc:
+        return _error("LEM_AUTOCORRECT_UNAVAILABLE", "Autocorrect is temporarily unavailable.", {"reason": str(exc)}, 503)
+    except Exception as exc:
+        return _error("LEM_AUTOCORRECT_ERROR", "Autocorrect failed.", {"reason": str(exc)}, 500)
+
+    await append_lem_search_log(endpoint, text[:200], "found" if result.get("has_issues") else "clean")
     return result
 
 
