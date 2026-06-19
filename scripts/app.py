@@ -186,10 +186,14 @@ PL_LEM_TRANSLATE_CODEX_TIMEOUT_SECONDS = max(
 DEEPL_API_BASE_URL = os.getenv("DEEPL_API_BASE_URL", "").strip()
 DEEPL_TIMEOUT_SECONDS = max(1, _env_int("DEEPL_TIMEOUT_SECONDS", 30))
 DEEPL_LANG_CACHE_TTL_SECONDS = max(60, _env_int("DEEPL_LANG_CACHE_TTL_SECONDS", 3600))
-DEEPL_TARGET_LANG_RE = re.compile(r"^[A-Z]{2,3}(?:-[A-Z0-9]{2,8})?$")
+DEEPL_LANG_RE = re.compile(r"^[A-Z]{2,3}(?:-[A-Z0-9]{2,8})?$")
+DEEPL_TARGET_LANG_RE = DEEPL_LANG_RE
+AUTO_SOURCE_LANGUAGE = {"language": "AUTO", "name": "Detect language"}
 POLISH_TARGET_LANGUAGE = {"language": "PL", "name": "Polish"}
 _deepl_target_languages_cache: Optional[Tuple[float, List[Dict[str, str]]]] = None
 _deepl_target_languages_lock = threading.Lock()
+_deepl_source_languages_cache: Optional[Tuple[float, List[Dict[str, str]]]] = None
+_deepl_source_languages_lock = threading.Lock()
 
 
 def _client_rate_limit_key(request: Request) -> str:
@@ -771,6 +775,11 @@ class PolishToLemkoTranslateRequest(BaseModel):
     codex_timeout: Optional[conint(ge=30, le=1800)] = None
 
 
+class DeeplTranslateToPolishRequest(BaseModel):
+    text: str
+    source_lang: Optional[str] = None
+
+
 class TTSSynthesizeRequest(BaseModel):
     text: constr(strip_whitespace=True, min_length=1, max_length=TTS_TEXT_MAX_CHARS)
     speaker: conint(ge=0, le=1) = 0
@@ -1120,11 +1129,37 @@ def _normalize_target_lang(raw_target_lang: Optional[str]) -> str:
     return target_lang
 
 
+def _normalize_source_lang(raw_source_lang: Optional[str]) -> str:
+    source_lang = (raw_source_lang or "AUTO").strip().replace("_", "-").upper()
+    if not source_lang:
+        return "AUTO"
+    if source_lang == "AUTO":
+        return source_lang
+    if not DEEPL_LANG_RE.match(source_lang):
+        raise ValueError("Pole 'source_lang' ma niepoprawny format.")
+    return source_lang
+
+
 def _with_polish_target_language(languages: Sequence[Dict[str, Any]]) -> List[Dict[str, str]]:
     normalized: List[Dict[str, str]] = []
     seen: Set[str] = set()
 
     for item in [POLISH_TARGET_LANGUAGE, *languages]:
+        language = str(item.get("language") or "").strip().upper()
+        name = str(item.get("name") or language).strip() or language
+        if not language or language in seen:
+            continue
+        normalized.append({"language": language, "name": name})
+        seen.add(language)
+
+    return normalized
+
+
+def _with_auto_source_language(languages: Sequence[Dict[str, Any]]) -> List[Dict[str, str]]:
+    normalized: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+
+    for item in [AUTO_SOURCE_LANGUAGE, POLISH_TARGET_LANGUAGE, *languages]:
         language = str(item.get("language") or "").strip().upper()
         name = str(item.get("name") or language).strip() or language
         if not language or language in seen:
@@ -1162,6 +1197,33 @@ def _get_deepl_target_languages() -> List[Dict[str, str]]:
         return languages
 
 
+def _get_deepl_source_languages() -> List[Dict[str, str]]:
+    global _deepl_source_languages_cache
+
+    auth_key = _deepl_auth_key()
+    if not auth_key:
+        return [AUTO_SOURCE_LANGUAGE, POLISH_TARGET_LANGUAGE]
+
+    now = time.monotonic()
+    with _deepl_source_languages_lock:
+        if _deepl_source_languages_cache:
+            cached_at, cached_languages = _deepl_source_languages_cache
+            if now - cached_at < DEEPL_LANG_CACHE_TTL_SECONDS:
+                return cached_languages
+
+        response = _deepl_json_request(
+            "languages",
+            auth_key=auth_key,
+            query={"type": "source"},
+        )
+        if not isinstance(response, list):
+            raise RuntimeError("DeepL API zwrocilo niepoprawna liste jezykow zrodlowych.")
+
+        languages = _with_auto_source_language([item for item in response if isinstance(item, dict)])
+        _deepl_source_languages_cache = (now, languages)
+        return languages
+
+
 def _translate_polish_with_deepl(text: str, target_lang: str) -> str:
     auth_key = _deepl_auth_key()
     if not auth_key:
@@ -1193,6 +1255,58 @@ def _translate_polish_with_deepl(text: str, target_lang: str) -> str:
 
 def _deepl_language_is_supported(target_lang: str, languages: Sequence[Dict[str, str]]) -> bool:
     return any(item.get("language") == target_lang for item in languages)
+
+
+def _translate_text_to_polish_with_deepl(text: str, source_lang: str) -> Dict[str, Any]:
+    if source_lang == "PL":
+        return {
+            "translated_text": text,
+            "source_lang": "PL",
+            "detected_source_lang": "PL",
+            "deepl_applied": False,
+        }
+
+    auth_key = _deepl_auth_key()
+    if not auth_key:
+        raise RuntimeError("Brak konfiguracji DeepL. Ustaw DEEPL_AUTH_KEY albo DEEPL_API_KEY.")
+
+    body: Dict[str, Any] = {
+        "text": [text],
+        "target_lang": "PL",
+        "preserve_formatting": True,
+    }
+    if source_lang != "AUTO":
+        body["source_lang"] = source_lang
+
+    response = _deepl_json_request(
+        "translate",
+        auth_key=auth_key,
+        method="POST",
+        body=body,
+    )
+    if not isinstance(response, dict):
+        raise RuntimeError("DeepL API zwrocilo niepoprawna odpowiedz.")
+
+    translations = response.get("translations")
+    if not isinstance(translations, list) or not translations:
+        raise RuntimeError("DeepL API nie zwrocilo tlumaczenia.")
+
+    first_translation = translations[0]
+    if not isinstance(first_translation, dict):
+        raise RuntimeError("DeepL API zwrocilo tlumaczenie w niepoprawnym formacie.")
+
+    translated_text = first_translation.get("text")
+    if not isinstance(translated_text, str):
+        raise RuntimeError("DeepL API zwrocilo tlumaczenie w niepoprawnym formacie.")
+
+    detected_source_lang = str(first_translation.get("detected_source_language") or "").strip().upper()
+    resolved_source_lang = detected_source_lang or source_lang
+    return {
+        "translated_text": translated_text,
+        "source_lang": resolved_source_lang,
+        "detected_source_lang": detected_source_lang or None,
+        "deepl_applied": True,
+    }
 
 
 def _public_job_error(error: Optional[str]) -> Optional[str]:
@@ -1710,6 +1824,86 @@ async def lemko_autocorrect(payload: LemAutocorrectRequest, authorization: str |
 
     await append_lem_search_log(endpoint, text[:200], "found" if result.get("has_issues") else "clean")
     return result
+
+
+@app.get("/v1/deepl/source-languages")
+async def deepl_source_languages(authorization: str | None = Header(default=None)):
+    await require_auth(authorization)
+    try:
+        languages = await asyncio.to_thread(_get_deepl_source_languages)
+    except RuntimeError as exc:
+        return _error("DEEPL_SOURCE_LANGUAGES_FAILED", str(exc), {}, 502)
+    except Exception as exc:
+        return _error(
+            "DEEPL_SOURCE_LANGUAGES_ERROR",
+            "Nie udalo sie pobrac listy jezykow zrodlowych.",
+            {"reason": str(exc)},
+            500,
+        )
+
+    return {
+        "source_languages": languages,
+        "target_language": POLISH_TARGET_LANGUAGE,
+        "deepl_available": bool(_deepl_auth_key()),
+    }
+
+
+@app.post("/v1/deepl/translate/pl")
+async def deepl_translate_to_polish(
+    payload: DeeplTranslateToPolishRequest,
+    authorization: str | None = Header(default=None),
+):
+    await require_auth(authorization)
+    text = (payload.text or "").strip()
+    if not text:
+        return _error("INVALID_REQUEST", "Pole 'text' nie moze byc puste.", {"field": "text"}, 400)
+
+    try:
+        source_lang = _normalize_source_lang(payload.source_lang)
+    except ValueError as exc:
+        return _error("INVALID_REQUEST", str(exc), {"field": "source_lang"}, 400)
+
+    if source_lang not in {"AUTO", "PL"}:
+        try:
+            source_languages = await asyncio.to_thread(_get_deepl_source_languages)
+        except RuntimeError as exc:
+            return _error("DEEPL_SOURCE_LANGUAGES_FAILED", str(exc), {}, 502)
+        except Exception as exc:
+            return _error(
+                "DEEPL_SOURCE_LANGUAGES_ERROR",
+                "Nie udalo sie zweryfikowac jezyka zrodlowego.",
+                {"reason": str(exc)},
+                500,
+            )
+
+        if not _deepl_language_is_supported(source_lang, source_languages):
+            return _error(
+                "UNSUPPORTED_SOURCE_LANGUAGE",
+                "Nieobslugiwany jezyk zrodlowy.",
+                {"field": "source_lang", "source_lang": source_lang},
+                400,
+            )
+
+    try:
+        result = await asyncio.to_thread(_translate_text_to_polish_with_deepl, text, source_lang)
+    except RuntimeError as exc:
+        return _error("DEEPL_TRANSLATE_FAILED", str(exc), {"source_lang": source_lang, "target_lang": "PL"}, 502)
+    except Exception as exc:
+        return _error(
+            "DEEPL_TRANSLATE_ERROR",
+            "Nie udalo sie wykonac tlumaczenia DeepL.",
+            {"reason": str(exc), "source_lang": source_lang, "target_lang": "PL"},
+            500,
+        )
+
+    return {
+        "translated_text": result.get("translated_text") or "",
+        "source_lang": result.get("source_lang") or source_lang,
+        "requested_source_lang": source_lang,
+        "detected_source_lang": result.get("detected_source_lang"),
+        "target_lang": "PL",
+        "deepl_applied": bool(result.get("deepl_applied")),
+    }
 
 
 @app.get("/v1/lemko/translate/languages")
