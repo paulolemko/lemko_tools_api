@@ -2895,58 +2895,108 @@ class CodexRunner:
 
     def run_json(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         resolved = resolve_codex_binary(self.codex_bin)
-        with tempfile.NamedTemporaryFile("w", suffix=".schema.json", encoding="utf-8", delete=False) as schema_file:
-            json.dump(schema.get("schema", schema), schema_file, ensure_ascii=False)
-            schema_path = schema_file.name
-        cmd = [
-            resolved,
-            "exec",
-            "--ephemeral",
-            "--sandbox",
-            "read-only",
-            "--skip-git-repo-check",
-            "--output-schema",
-            schema_path,
-            "-",
-        ]
-        if self.debug:
-            print(f"[codex] {' '.join(cmd)}", file=sys.stderr)
-        try:
-            completed = subprocess.run(
-                cmd,
-                input=prompt,
-                text=True,
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self.timeout,
-            )
-        except FileNotFoundError as exc:
-            raise CodexExecutionError(
-                f"Codex CLI not found: {self.codex_bin!r}. Pass --codex-bin or put codex on PATH."
-            ) from exc
-        except PermissionError as exc:
-            raise CodexExecutionError(
-                "Codex CLI could not be started because the OS denied access. "
-                "Pass --codex-bin pointing to a working Codex executable or run from a terminal where `codex exec` works."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise CodexExecutionError(f"Codex CLI timed out after {self.timeout}s.") from exc
-        except OSError as exc:
-            raise CodexExecutionError(f"Codex CLI could not be started: {exc}") from exc
-        finally:
+        with tempfile.TemporaryDirectory(prefix="pl-lem-codex-") as tmp:
+            base = Path(tmp)
+            workdir = base / "work"
+            codex_home = base / "codex-home"
+            home = base / "home"
+            workdir.mkdir(parents=True, exist_ok=True)
+            home.mkdir(parents=True, exist_ok=True)
+            copy_codex_auth(codex_home)
+
+            schema_path = base / "output-schema.json"
+            schema_path.write_text(json.dumps(schema.get("schema", schema), ensure_ascii=False), encoding="utf-8")
+            output_path = base / "last-message.json"
+
+            cmd = [
+                resolved,
+                "exec",
+                "--skip-git-repo-check",
+                "--ephemeral",
+                "--ignore-user-config",
+                "--sandbox",
+                "read-only",
+                "--cd",
+                str(workdir),
+                "--color",
+                "never",
+                "-o",
+                str(output_path),
+                "--output-schema",
+                str(schema_path),
+                "-",
+            ]
+            if self.debug:
+                print(f"[codex] {' '.join(cmd)}", file=sys.stderr)
+
+            env = os.environ.copy()
+            env["CODEX_HOME"] = str(codex_home)
+            env["HOME"] = str(home)
+            env.setdefault("NO_COLOR", "1")
+
             try:
-                os.remove(schema_path)
-            except OSError:
-                pass
+                completed = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    text=True,
+                    capture_output=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=self.timeout,
+                    env=env,
+                    cwd=str(workdir),
+                )
+            except FileNotFoundError as exc:
+                raise CodexExecutionError(
+                    f"Codex CLI not found: {self.codex_bin!r}. Pass --codex-bin or put codex on PATH."
+                ) from exc
+            except PermissionError as exc:
+                raise CodexExecutionError(
+                    "Codex CLI could not be started because the OS denied access. "
+                    "Pass --codex-bin pointing to a working Codex executable or run from a terminal where `codex exec` works."
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise CodexExecutionError(f"Codex CLI timed out after {self.timeout}s.") from exc
+            except OSError as exc:
+                raise CodexExecutionError(f"Codex CLI could not be started: {exc}") from exc
 
-        if completed.returncode != 0:
-            details = (completed.stderr or completed.stdout or "").strip()
-            raise CodexExecutionError(f"Codex CLI failed with exit code {completed.returncode}: {details[:12000]}")
+            if completed.returncode != 0:
+                details = (completed.stderr or completed.stdout or "").strip()
+                raise CodexExecutionError(f"Codex CLI failed with exit code {completed.returncode}: {error_tail(details)}")
 
-        if self.debug and completed.stderr.strip():
-            print(completed.stderr.strip(), file=sys.stderr)
-        return parse_codex_json(completed.stdout)
+            if self.debug and completed.stderr.strip():
+                print(completed.stderr.strip(), file=sys.stderr)
+            raw_output = output_path.read_text(encoding="utf-8") if output_path.is_file() else completed.stdout
+            return parse_codex_json(raw_output)
+
+
+def copy_codex_auth(codex_home: Path) -> None:
+    auth_dir = Path(os.getenv("CODEX_AUTH_DIR", "/run/codex-auth")).expanduser()
+    auth_file = Path(os.getenv("CODEX_AUTH_FILE", str(auth_dir / "auth.json"))).expanduser()
+    if not auth_file.is_file():
+        fallback = Path.home() / ".codex" / "auth.json"
+        if fallback.is_file():
+            auth_file = fallback
+        else:
+            raise CodexExecutionError("Codex auth file not found. Set CODEX_AUTH_DIR or CODEX_AUTH_FILE.")
+
+    codex_home.mkdir(parents=True, exist_ok=True)
+    target_auth = codex_home / "auth.json"
+    shutil.copy2(auth_file, target_auth)
+    target_auth.chmod(0o600)
+
+    config_file = Path(os.getenv("CODEX_CONFIG_FILE", str(auth_dir / "config.toml"))).expanduser()
+    if config_file.is_file():
+        target_config = codex_home / "config.toml"
+        shutil.copy2(config_file, target_config)
+        target_config.chmod(0o600)
+
+
+def error_tail(text: str, limit: int = 1200) -> str:
+    cleaned = text.strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[-limit:]
 
 
 def resolve_codex_binary(codex_bin: str) -> str:
