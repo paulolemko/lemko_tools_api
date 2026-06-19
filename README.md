@@ -71,6 +71,7 @@ Katalogi takie jak `models/`, `logs/`, `vocab_json/`, `psql_dump/`, `qdrant_data
 - `POST /v1/lemko/search/pl` - wyszukiwanie haseł łemkowskich po polskim tłumaczeniu.
 - `POST /v1/lemko/search/en` - wyszukiwanie haseł łemkowskich po angielskim tłumaczeniu.
 - `POST /v1/lemko/translate/pl` - tłumaczenie tekstu łemkowskiego na polski z użyciem OpenAI i słownika.
+- `POST /v1/polish/translate/lemko` - tłumaczenie tekstu polskiego na łemkowski z użyciem Codex CLI, słownika i reguł `docs/structured_rules`.
 - `POST /v1/tts` - synteza mowy do pliku M4A.
 
 Pełny opis znajduje się w [docs/API.md](docs/API.md).
@@ -95,6 +96,8 @@ Wyszukiwanie słownikowe opiera się o PostgreSQL i tabele `public.terms`, `publ
 2. Jeśli model zgłosi nieznane słowa, kod pobiera definicje i konteksty z PostgreSQL, po czym prosi model o finalne tłumaczenie.
 
 Endpoint API dla tego modułu to `POST /v1/lemko/translate/pl`.
+
+`scripts/pl_to_lemko_translate.py` tłumaczy tekst polski na łemkowski przez Codex CLI, istniejące endpointy słownikowe i lokalne reguły `docs/structured_rules`. Endpoint API dla tego modułu to `POST /v1/polish/translate/lemko`.
 
 ### TTS
 

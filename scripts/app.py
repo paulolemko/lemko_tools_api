@@ -11,12 +11,23 @@ import numpy as np
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Request, BackgroundTasks, Response
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, conint, constr
+from pydantic import BaseModel, conint, constr, confloat
 
 
 # import silnika ASR
 from asr_engine import ASREngine, ASRConfig
 from lem_translate import DEFAULT_MODEL as LEM_TRANSLATE_BASE_MODEL, lem_translate as run_lemko_translate
+from pl_to_lemko_translate import (
+    DEFAULT_CODEX_TIMEOUT as PL_LEM_DEFAULT_CODEX_TIMEOUT,
+    DEFAULT_MAX_CHARS as PL_LEM_DEFAULT_MAX_CHARS,
+    DEFAULT_MAX_MEMORY_EXAMPLES as PL_LEM_DEFAULT_MAX_MEMORY_EXAMPLES,
+    DEFAULT_MAX_TERMS as PL_LEM_DEFAULT_MAX_TERMS,
+    DEFAULT_MEMORY_MIN_SCORE as PL_LEM_DEFAULT_MEMORY_MIN_SCORE,
+    DEFAULT_MEMORY_RISK_POLICY as PL_LEM_DEFAULT_MEMORY_RISK_POLICY,
+    MEMORY_RISK_POLICIES as PL_LEM_MEMORY_RISK_POLICIES,
+    TranslationError as PolishToLemkoTranslationError,
+    translate_text as run_polish_to_lemko_translate,
+)
 from styletts2_engine import StyleTTS2Engine, SynthesisResult
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -139,6 +150,39 @@ _pl_lem_search_lock = threading.Lock()
 LEM_TRANSLATE_ENABLED = os.getenv("LEM_TRANSLATE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 _lem_translate_model_env = os.getenv("LEM_TRANSLATE_MODEL", "").strip()
 LEM_TRANSLATE_DEFAULT_MODEL = _lem_translate_model_env or LEM_TRANSLATE_BASE_MODEL
+PL_LEM_TRANSLATE_ENABLED = os.getenv("PL_LEM_TRANSLATE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+PL_LEM_TRANSLATE_API_BASE = os.getenv("PL_LEM_TRANSLATE_API_BASE", "http://127.0.0.1:8000").strip()
+PL_LEM_TRANSLATE_CODEX_BIN = (
+    os.getenv("PL_LEM_TRANSLATE_CODEX_BIN")
+    or os.getenv("CODEX_CLI_PATH")
+    or os.getenv("CODEX_BIN")
+    or "codex"
+)
+PL_LEM_TRANSLATE_RULES_DIR = Path(
+    os.getenv(
+        "PL_LEM_TRANSLATE_RULES_DIR",
+        str(Path(__file__).resolve().parents[1] / "docs" / "structured_rules"),
+    )
+)
+PL_LEM_TRANSLATE_MAX_CHARS = max(100, _env_int("PL_LEM_TRANSLATE_MAX_CHARS", PL_LEM_DEFAULT_MAX_CHARS))
+PL_LEM_TRANSLATE_MAX_TERMS = max(0, _env_int("PL_LEM_TRANSLATE_MAX_TERMS", PL_LEM_DEFAULT_MAX_TERMS))
+PL_LEM_TRANSLATE_MAX_MEMORY_EXAMPLES = max(
+    0, _env_int("PL_LEM_TRANSLATE_MAX_MEMORY_EXAMPLES", PL_LEM_DEFAULT_MAX_MEMORY_EXAMPLES)
+)
+PL_LEM_TRANSLATE_MEMORY_MIN_SCORE = max(
+    0.0, _env_float("PL_LEM_TRANSLATE_MEMORY_MIN_SCORE", PL_LEM_DEFAULT_MEMORY_MIN_SCORE)
+)
+PL_LEM_TRANSLATE_MEMORY_PROFILE_SCORING = _env_bool("PL_LEM_TRANSLATE_MEMORY_PROFILE_SCORING", False)
+PL_LEM_TRANSLATE_MEMORY_RISK_POLICY = os.getenv(
+    "PL_LEM_TRANSLATE_MEMORY_RISK_POLICY", PL_LEM_DEFAULT_MEMORY_RISK_POLICY
+).strip()
+PL_LEM_TRANSLATE_CODEX_TIMEOUT_SECONDS = max(
+    1,
+    _env_int(
+        "PL_LEM_TRANSLATE_CODEX_TIMEOUT_SECONDS",
+        _env_int("CODEX_CLI_TIMEOUT_SECONDS", PL_LEM_DEFAULT_CODEX_TIMEOUT),
+    ),
+)
 DEEPL_API_BASE_URL = os.getenv("DEEPL_API_BASE_URL", "").strip()
 DEEPL_TIMEOUT_SECONDS = max(1, _env_int("DEEPL_TIMEOUT_SECONDS", 30))
 DEEPL_LANG_CACHE_TTL_SECONDS = max(60, _env_int("DEEPL_LANG_CACHE_TTL_SECONDS", 3600))
@@ -716,6 +760,17 @@ class LemTranslateRequest(BaseModel):
     target_lang: Optional[str] = None
 
 
+class PolishToLemkoTranslateRequest(BaseModel):
+    text: str
+    max_chars: Optional[conint(ge=100, le=5000)] = None
+    max_terms: Optional[conint(ge=0, le=100)] = None
+    max_memory_examples: Optional[conint(ge=0, le=10)] = None
+    memory_min_score: Optional[confloat(ge=0.0, le=1.0)] = None
+    memory_profile_scoring: Optional[bool] = None
+    memory_risk_policy: Optional[Literal["include", "demote", "exclude"]] = None
+    codex_timeout: Optional[conint(ge=30, le=1800)] = None
+
+
 class TTSSynthesizeRequest(BaseModel):
     text: constr(strip_whitespace=True, min_length=1, max_length=TTS_TEXT_MAX_CHARS)
     speaker: conint(ge=0, le=1) = 0
@@ -927,6 +982,52 @@ def _error(code: str, message: str, details: dict, status: int):
         message = _public_error_message(status)
         details = {}
     return JSONResponse(status_code=status, content={"error": {"code": code, "message": message, "details": details}})
+
+
+def _polish_to_lemko_api_token() -> Optional[str]:
+    explicit = os.getenv("PL_LEM_TRANSLATE_API_TOKEN", "").strip() or os.getenv("LEMKO_API_TOKEN", "").strip()
+    if explicit:
+        return explicit
+
+    normalized_base = PL_LEM_TRANSLATE_API_BASE.rstrip("/").lower()
+    trusted_bases = {
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "https://apiasr.spektrogram.com",
+        "https://lemko.tools",
+        "https://www.lemko.tools",
+    }
+    if JWT_SECRET and normalized_base in trusted_bases:
+        return JWT_SECRET
+    return None
+
+
+def _normalize_pl_lem_memory_risk_policy(value: Optional[str]) -> str:
+    policy = (value or PL_LEM_TRANSLATE_MEMORY_RISK_POLICY or PL_LEM_DEFAULT_MEMORY_RISK_POLICY).strip().lower()
+    if policy not in PL_LEM_MEMORY_RISK_POLICIES:
+        raise ValueError(
+            "PL_LEM_TRANSLATE_MEMORY_RISK_POLICY must be one of: "
+            + ", ".join(PL_LEM_MEMORY_RISK_POLICIES)
+        )
+    return policy
+
+
+def _compact_pl_lem_memory_examples(items: Any) -> List[Dict[str, Any]]:
+    compact: List[Dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        compact.append(
+            {
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "source_report": item.get("source_report"),
+                "score": item.get("score"),
+                "lexical_score": item.get("lexical_score"),
+                "profile_score": item.get("profile_score"),
+            }
+        )
+    return compact
 
 
 def _read_secret_from_env_or_file(value_names: Sequence[str], file_names: Sequence[str]) -> Optional[str]:
@@ -1717,6 +1818,101 @@ async def lem_translate_pl(payload: LemTranslateRequest, authorization: str | No
         "attempts": result.get("attempts"),
     }
     return response_payload
+
+
+@app.post("/v1/polish/translate/lemko")
+async def polish_translate_lemko(
+    payload: PolishToLemkoTranslateRequest,
+    authorization: str | None = Header(default=None),
+):
+    endpoint = "/v1/polish/translate/lemko"
+    await require_auth(authorization)
+    if not PL_LEM_TRANSLATE_ENABLED:
+        await append_lem_translate_log(endpoint, payload.text, "")
+        return _error("PL_LEM_TRANSLATE_DISABLED", "Funkcja tlumaczenia PL->LEM jest wylaczona.", {}, 503)
+
+    text = (payload.text or "").strip()
+    if not text:
+        await append_lem_translate_log(endpoint, payload.text, "")
+        return _error("INVALID_REQUEST", "Pole 'text' nie moze byc puste.", {"field": "text"}, 400)
+
+    try:
+        memory_risk_policy = _normalize_pl_lem_memory_risk_policy(payload.memory_risk_policy)
+    except ValueError as exc:
+        await append_lem_translate_log(endpoint, text, "")
+        return _error("PL_LEM_TRANSLATE_CONFIG_ERROR", str(exc), {"field": "memory_risk_policy"}, 500)
+
+    max_chars = int(payload.max_chars or PL_LEM_TRANSLATE_MAX_CHARS)
+    max_terms = int(payload.max_terms if payload.max_terms is not None else PL_LEM_TRANSLATE_MAX_TERMS)
+    max_memory_examples = int(
+        payload.max_memory_examples
+        if payload.max_memory_examples is not None
+        else PL_LEM_TRANSLATE_MAX_MEMORY_EXAMPLES
+    )
+    memory_min_score = float(
+        payload.memory_min_score
+        if payload.memory_min_score is not None
+        else PL_LEM_TRANSLATE_MEMORY_MIN_SCORE
+    )
+    memory_profile_scoring = (
+        bool(payload.memory_profile_scoring)
+        if payload.memory_profile_scoring is not None
+        else PL_LEM_TRANSLATE_MEMORY_PROFILE_SCORING
+    )
+    codex_timeout = int(payload.codex_timeout or PL_LEM_TRANSLATE_CODEX_TIMEOUT_SECONDS)
+
+    started_at = time.monotonic()
+    try:
+        result = await asyncio.to_thread(
+            run_polish_to_lemko_translate,
+            text,
+            api_base=PL_LEM_TRANSLATE_API_BASE,
+            api_token=_polish_to_lemko_api_token(),
+            codex_bin=PL_LEM_TRANSLATE_CODEX_BIN,
+            rules_dir=PL_LEM_TRANSLATE_RULES_DIR,
+            max_chars=max_chars,
+            max_terms=max_terms,
+            max_memory_examples=max_memory_examples,
+            memory_min_score=memory_min_score,
+            memory_profile_scoring=memory_profile_scoring,
+            memory_risk_policy=memory_risk_policy,
+            codex_timeout=codex_timeout,
+            debug=False,
+        )
+    except PolishToLemkoTranslationError as exc:
+        await append_lem_translate_log(endpoint, text, "")
+        return _error("PL_LEM_TRANSLATE_FAILED", str(exc), {}, 502)
+    except Exception as exc:
+        await append_lem_translate_log(endpoint, text, "")
+        return _error("PL_LEM_TRANSLATE_ERROR", "Nie udalo sie wykonac tlumaczenia PL->LEM.", {"reason": str(exc)}, 500)
+
+    translated_text = result.get("translated_text") or ""
+    await append_lem_translate_log(endpoint, text, translated_text)
+
+    return {
+        "translated_text": translated_text,
+        "source_lang": "PL",
+        "target_lang": "LEM",
+        "model": result.get("model") or "codex-cli-default",
+        "attempts": result.get("attempts"),
+        "duration_s": round(time.monotonic() - started_at, 3),
+        "resolved_polish_terms": result.get("resolved_polish_terms", []),
+        "dictionary_candidate_count": len(result.get("dictionary_candidates") or []),
+        "used_dictionary_entries": result.get("used_dictionary_entries", []),
+        "missing_terms": result.get("missing_terms", []),
+        "uncertain_terms": result.get("uncertain_terms", []),
+        "warnings": result.get("warnings", []),
+        "used_memory_examples": _compact_pl_lem_memory_examples(result.get("translation_memory_examples")),
+        "memory_risk_policy": result.get("memory_risk_policy") or memory_risk_policy,
+        "limits": {
+            "max_chars": max_chars,
+            "max_terms": max_terms,
+            "max_memory_examples": max_memory_examples,
+            "memory_min_score": memory_min_score,
+            "memory_profile_scoring": memory_profile_scoring,
+            "codex_timeout": codex_timeout,
+        },
+    }
 
 
 @app.post("/v1/lemfm/tts")

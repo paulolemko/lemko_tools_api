@@ -24,10 +24,15 @@ services:
       CODEX_CLI_PATH: /usr/local/bin/codex
       CODEX_AUTH_DIR: /run/codex-auth
       CODEX_CLI_TIMEOUT_SECONDS: "900"
+      PL_LEM_TRANSLATE_API_BASE: http://127.0.0.1:8000
+      PL_LEM_TRANSLATE_CODEX_BIN: /usr/local/bin/codex
+      PL_LEM_TRANSLATE_RULES_DIR: /app/docs/structured_rules
+      PL_LEM_TRANSLATE_CODEX_TIMEOUT_SECONDS: "900"
     ports:
       - "127.0.0.1:8000:8000"   # słucha tylko na hoście (loopback)
     volumes:
       - ./scripts:/app/scripts:ro
+      - ./docs/structured_rules:/app/docs/structured_rules:ro
       - ./logs:/app/logs
       - ./models:/app/models:ro
       - ./vocab_json:/app/vocab_json:ro

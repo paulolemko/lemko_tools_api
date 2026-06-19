@@ -1,0 +1,42 @@
+﻿[
+    {
+        "source_file":  "01-system-fonemy-grafemy.md",
+        "tables":  1,
+        "rows":  34
+    },
+    {
+        "source_file":  "03-rzeczownik.md",
+        "tables":  48,
+        "rows":  383
+    },
+    {
+        "source_file":  "04-przymiotnik.md",
+        "tables":  17,
+        "rows":  112
+    },
+    {
+        "source_file":  "05-liczebnik.md",
+        "tables":  16,
+        "rows":  156
+    },
+    {
+        "source_file":  "06-zaimek.md",
+        "tables":  18,
+        "rows":  126
+    },
+    {
+        "source_file":  "07-czasownik.md",
+        "tables":  23,
+        "rows":  119
+    },
+    {
+        "source_file":  "08-imieslow-przyslowek-niesamodzielne.md",
+        "tables":  1,
+        "rows":  8
+    },
+    {
+        "source_file":  "09-ortografia.md",
+        "tables":  3,
+        "rows":  22
+    }
+]

@@ -260,6 +260,48 @@ Wymaga:
 
 Uwaga: moduł próbuje opcjonalnie załadować `scripts/pl-en-fasttext.py`, którego nie ma w śledzonych plikach repo. Jeśli go nie znajdzie, wypisuje ostrzeżenie i działa dalej bez tego dodatkowego fallbacku.
 
+## scripts/pl_to_lemko_translate.py
+
+Tłumaczenie tekstu polskiego na łemkowski z pomocą Codex CLI, istniejących
+endpointów słownikowych i lokalnych reguł z `docs/structured_rules`.
+
+### Rola w API
+
+Endpoint:
+
+```text
+POST /v1/polish/translate/lemko
+```
+
+`app.py` importuje:
+
+```python
+from pl_to_lemko_translate import translate_text
+```
+
+### Przepływ
+
+1. Dzieli tekst polski na chunki.
+2. Wyciąga polskie terminy i odpytuje `/v1/lemko/search/pl`.
+3. Dla znalezionych form łemkowskich odpytuje `/v1/lemko/search`.
+4. Ładuje reguły z `docs/structured_rules`.
+5. Opcjonalnie dobiera przykłady z raportów pamięci tłumaczeniowej.
+6. Uruchamia `codex exec` z wymuszonym schematem JSON.
+7. Zwraca tłumaczenie oraz metadane słownikowe i ostrzeżenia.
+
+### CLI
+
+```bash
+python3 scripts/pl_to_lemko_translate.py --text "Test tłumaczenia z polskiego na łemkowski." --json
+python3 scripts/pl_to_lemko_translate.py --input input.txt --output out.json
+```
+
+Wymaga:
+
+- działającego Codex CLI,
+- dostępu do endpointów słownikowych API,
+- katalogu `docs/structured_rules`.
+
 ## scripts/fasttext2lemtools.py
 
 Sugestie podobnych słów na bazie FastText, RapidFuzz i odległości Levenshteina.

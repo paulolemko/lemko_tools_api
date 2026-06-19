@@ -752,6 +752,103 @@ Błędy:
 - `503 LEM_TRANSLATE_DISABLED` - `LEM_TRANSLATE_ENABLED=0/false/no/off`.
 - `500 LEM_TRANSLATE_ERROR` - nieoczekiwany wyjątek.
 
+## Tłumaczenie Polski -> Łemkowski
+
+### POST /v1/polish/translate/lemko
+
+Tłumaczy tekst polski na łemkowski przy użyciu lokalnego modułu
+`scripts/pl_to_lemko_translate.py`, reguł z `docs/structured_rules` oraz
+istniejących endpointów słownikowych `/v1/lemko/search/pl` i
+`/v1/lemko/search`.
+
+Request:
+
+```json
+{
+  "text": "Polski tekst do tłumaczenia.",
+  "max_chars": 1600,
+  "max_terms": 30,
+  "max_memory_examples": 3,
+  "memory_min_score": 0.08,
+  "memory_profile_scoring": false,
+  "memory_risk_policy": "include",
+  "codex_timeout": 900
+}
+```
+
+Wymagane jest tylko `text`. Pozostałe pola nadpisują limity z konfiguracji
+środowiskowej dla pojedynczego żądania.
+
+Przykład:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/v1/polish/translate/lemko \
+  -H "Authorization: Bearer $JWT_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Test tłumaczenia z polskiego na łemkowski."}'
+```
+
+Odpowiedź:
+
+```json
+{
+  "translated_text": "...",
+  "source_lang": "PL",
+  "target_lang": "LEM",
+  "model": "codex-cli-default",
+  "attempts": 1,
+  "duration_s": 12.345,
+  "resolved_polish_terms": ["test", "tłumaczenia"],
+  "dictionary_candidate_count": 2,
+  "used_dictionary_entries": [],
+  "missing_terms": [],
+  "uncertain_terms": [],
+  "warnings": [],
+  "used_memory_examples": [],
+  "memory_risk_policy": "include",
+  "limits": {
+    "max_chars": 1600,
+    "max_terms": 30,
+    "max_memory_examples": 3,
+    "memory_min_score": 0.08,
+    "memory_profile_scoring": false,
+    "codex_timeout": 900
+  }
+}
+```
+
+Wymagania runtime:
+
+- `scripts/pl_to_lemko_translate.py` dostępny w kontenerze;
+- `docs/structured_rules` zamontowane jako `/app/docs/structured_rules`;
+- działające lokalne endpointy słownikowe;
+- działający Codex CLI, domyślnie `/usr/local/bin/codex`;
+- pliki auth Codex zamontowane analogicznie jak dla istniejącego translatora.
+
+Konfiguracja:
+
+| Zmienna | Domyślnie | Użycie |
+| --- | --- | --- |
+| `PL_LEM_TRANSLATE_ENABLED` | `1` | Włącza endpoint. |
+| `PL_LEM_TRANSLATE_API_BASE` | `http://127.0.0.1:8000` | Baza lokalnych wywołań słownikowych. |
+| `PL_LEM_TRANSLATE_API_TOKEN` | puste | Opcjonalny token dla API słownika; przy lokalnej bazie i braku tej zmiennej używa `JWT_SECRET`. |
+| `PL_LEM_TRANSLATE_RULES_DIR` | `docs/structured_rules` | Katalog reguł gramatycznych. |
+| `PL_LEM_TRANSLATE_CODEX_BIN` | `CODEX_CLI_PATH`/`CODEX_BIN`/`codex` | Ścieżka do Codex CLI. |
+| `PL_LEM_TRANSLATE_CODEX_TIMEOUT_SECONDS` | `CODEX_CLI_TIMEOUT_SECONDS` albo `600` | Timeout pojedynczego chunka. |
+| `PL_LEM_TRANSLATE_MAX_CHARS` | `1600` | Domyślny limit znaków na chunk. |
+| `PL_LEM_TRANSLATE_MAX_TERMS` | `30` | Domyślny limit zapytań słownikowych na chunk. |
+| `PL_LEM_TRANSLATE_MAX_MEMORY_EXAMPLES` | `3` | Liczba przykładów pamięci tłumaczeniowej. |
+| `PL_LEM_TRANSLATE_MEMORY_MIN_SCORE` | `0.08` | Minimalny score pamięci tłumaczeniowej. |
+| `PL_LEM_TRANSLATE_MEMORY_PROFILE_SCORING` | `0` | Włącza scoring profilowy pamięci. |
+| `PL_LEM_TRANSLATE_MEMORY_RISK_POLICY` | `include` | `include`, `demote` albo `exclude`. |
+
+Błędy:
+
+- `400 INVALID_REQUEST` - puste `text` albo błąd walidacji pól.
+- `502 PL_LEM_TRANSLATE_FAILED` - błąd kontrolowany z tłumacza, API słownika albo Codex CLI.
+- `503 PL_LEM_TRANSLATE_DISABLED` - `PL_LEM_TRANSLATE_ENABLED=0/false/no/off`.
+- `500 PL_LEM_TRANSLATE_ERROR` - nieoczekiwany wyjątek.
+
 ## TTS
 
 ### POST /v1/tts

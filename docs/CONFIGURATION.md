@@ -48,6 +48,7 @@ Wolumeny:
 ```yaml
 volumes:
   - ./scripts:/app/scripts:ro
+  - ./docs/structured_rules:/app/docs/structured_rules:ro
   - ./logs:/app/logs
   - ./models:/app/models:ro
   - ./vocab_json:/app/vocab_json:ro
@@ -63,6 +64,10 @@ LEM_SEARCH_LOG_PATH: /app/logs/lemko_search_log.csv
 LEM_TRANSLATE_LOG_PATH: /app/logs/lemko_translate_log.csv
 LEM_TTS_LOG_PATH: /app/logs/lemko_tts_log.csv
 VOCAB_JSON_DIR: /app/vocab_json
+PL_LEM_TRANSLATE_API_BASE: http://127.0.0.1:8000
+PL_LEM_TRANSLATE_CODEX_BIN: /usr/local/bin/codex
+PL_LEM_TRANSLATE_RULES_DIR: /app/docs/structured_rules
+PL_LEM_TRANSLATE_CODEX_TIMEOUT_SECONDS: "900"
 ```
 
 Uwaga: `compose.yml` nie ustawia jawnie `TRANS_DIR` ani `LOG_PATH`. Domyślnie będą to odpowiednio `/app/transkrypcje` i `/app/log.json` wewnątrz kontenera. Jeśli artefakty transkrypcji i JSONL log mają przetrwać odtworzenie kontenera, ustaw je np. na `/app/logs/transkrypcje` i `/app/logs/log.json`.
@@ -294,6 +299,23 @@ Prefiks środowiskowy: `LEM_EN`.
 | `OPENAI_API_KEY_FILE` | brak | Ścieżka do pliku z kluczem; jeśli istnieje, wartość trafia do `OPENAI_API_KEY`. |
 | `LEM_TRANSLATE_SERVICE_TIER` | brak | Opcjonalny `service_tier` dla Responses API. |
 | `OPENAI_SERVICE_TIER` | brak | Alternatywna zmienna dla `service_tier`. |
+
+## Zmienne Tłumaczenia Polski -> Łemkowski
+
+| Zmienna | Domyślnie | Opis |
+| --- | --- | --- |
+| `PL_LEM_TRANSLATE_ENABLED` | `1` | `0`, `false`, `no`, `off` wyłącza endpoint `POST /v1/polish/translate/lemko`. |
+| `PL_LEM_TRANSLATE_API_BASE` | `http://127.0.0.1:8000` | Baza istniejącego API słownikowego używanego do `/v1/lemko/search/pl` i `/v1/lemko/search`. |
+| `PL_LEM_TRANSLATE_API_TOKEN` | brak | Opcjonalny Bearer token dla API słownikowego. Przy lokalnym API i braku tej zmiennej używany jest `JWT_SECRET`. |
+| `PL_LEM_TRANSLATE_RULES_DIR` | `docs/structured_rules` | Katalog z `tables.json` i tabelami reguł. W Compose ustawione na `/app/docs/structured_rules`. |
+| `PL_LEM_TRANSLATE_CODEX_BIN` | `CODEX_CLI_PATH`, `CODEX_BIN` albo `codex` | Ścieżka do Codex CLI. |
+| `PL_LEM_TRANSLATE_CODEX_TIMEOUT_SECONDS` | `CODEX_CLI_TIMEOUT_SECONDS` albo `600` | Timeout jednego chunka `codex exec`. |
+| `PL_LEM_TRANSLATE_MAX_CHARS` | `1600` | Domyślna maksymalna długość chunka. |
+| `PL_LEM_TRANSLATE_MAX_TERMS` | `30` | Domyślna liczba polskich terminów odpytanych w słowniku na chunk. |
+| `PL_LEM_TRANSLATE_MAX_MEMORY_EXAMPLES` | `3` | Domyślna liczba przykładów pamięci tłumaczeniowej. |
+| `PL_LEM_TRANSLATE_MEMORY_MIN_SCORE` | `0.08` | Minimalny score przykładów pamięci. |
+| `PL_LEM_TRANSLATE_MEMORY_PROFILE_SCORING` | `false` | Włącza eksperymentalne profilowe punktowanie pamięci. |
+| `PL_LEM_TRANSLATE_MEMORY_RISK_POLICY` | `include` | `include`, `demote` albo `exclude`. |
 
 ## Zmienne FastText
 
