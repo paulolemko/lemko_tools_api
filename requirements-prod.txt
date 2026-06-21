@@ -32,7 +32,7 @@ pytorch-lightning==2.4.0
 lightning-utilities==0.15.2
 transformers==4.56.0
 webdataset==1.0.2
-pyannote.core==5.0.0
+pyannote.core==6.0.1
 datasets==4.0.0
 editdistance==0.8.1
 pyannote.database==5.1.3
