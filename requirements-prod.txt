@@ -42,7 +42,7 @@ IPython
 
 # Wymagane przez NeMo (import-time)
 lhotse==1.30.3
-einops==0.8.1
+einops==0.8.2
 einops-exts==0.0.4
 sentencepiece==0.2.1
 
