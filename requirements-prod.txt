@@ -12,7 +12,7 @@ pandas==2.3.2
 jiwer==4.0.0
 
 # Database
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.12
 
 # Search utilities
 qdrant-client==1.15.1
