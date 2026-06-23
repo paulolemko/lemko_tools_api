@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import glob
-import hashlib
 import json
 import os
 import re
@@ -18,7 +17,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import textwrap
 import time
 import unicodedata
@@ -39,9 +37,12 @@ DEFAULT_MEMORY_PROFILE_LEXICAL_FLOOR = 0.05
 DEFAULT_MEMORY_LOW_SCORE_AUDIT_THRESHOLD = 0.10
 DEFAULT_MEMORY_RISK_POLICY = "include"
 MEMORY_RISK_POLICIES = ("include", "demote", "exclude")
-DEFAULT_CODEX_API_KEY_HOME = "/tmp/lemko-codex-api-key-home"
-
-_CODEX_LOGIN_LOCK = threading.Lock()
+DEFAULT_CODEX_MODEL = "gpt-5.5"
+CODEX_MODEL_ENV_VARS = (
+    "PL_LEM_TRANSLATE_CODEX_MODEL",
+    "CODEX_TRANSLATE_MODEL",
+    "CODEX_MODEL",
+)
 
 POLISH_ASCII_TRANSLATION = str.maketrans(
     {
@@ -16418,72 +16419,25 @@ def is_api_connectivity_failure(exc: TranslationError) -> bool:
     return "timed out" in message or "unavailable" in message or "HTTP 5" in message
 
 
-def build_codex_environment(resolved_codex_bin: str) -> dict[str, str]:
+def configured_codex_model() -> str:
+    for name in CODEX_MODEL_ENV_VARS:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return DEFAULT_CODEX_MODEL
+
+
+def build_codex_environment() -> dict[str, str]:
     env = os.environ.copy()
     explicit_home = env.get("PL_LEM_TRANSLATE_CODEX_HOME", "").strip()
     if explicit_home:
         env["CODEX_HOME"] = explicit_home
         return env
 
-    api_key = env.get("OPENAI_API_KEY", "").strip()
-    if api_key:
-        codex_home = Path(env.get("PL_LEM_TRANSLATE_CODEX_API_HOME", DEFAULT_CODEX_API_KEY_HOME))
-        ensure_codex_api_key_login(resolved_codex_bin, codex_home, api_key, env)
-        env["CODEX_HOME"] = str(codex_home)
-        return env
-
     auth_dir = env.get("CODEX_AUTH_DIR", "").strip()
     if auth_dir and not env.get("CODEX_HOME"):
         env["CODEX_HOME"] = auth_dir
     return env
-
-
-def ensure_codex_api_key_login(
-    resolved_codex_bin: str,
-    codex_home: Path,
-    api_key: str,
-    base_env: dict[str, str],
-) -> None:
-    fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-    marker_path = codex_home / ".openai_api_key.sha256"
-    auth_path = codex_home / "auth.json"
-
-    if auth_path.exists() and marker_path.exists() and marker_path.read_text(encoding="utf-8").strip() == fingerprint:
-        return
-
-    with _CODEX_LOGIN_LOCK:
-        if auth_path.exists() and marker_path.exists() and marker_path.read_text(encoding="utf-8").strip() == fingerprint:
-            return
-
-        codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
-        login_env = base_env.copy()
-        login_env["CODEX_HOME"] = str(codex_home)
-        try:
-            completed = subprocess.run(
-                [resolved_codex_bin, "login", "--with-api-key"],
-                input=api_key + "\n",
-                text=True,
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-                env=login_env,
-            )
-        except (FileNotFoundError, PermissionError, OSError) as exc:
-            raise CodexExecutionError(f"Codex CLI API-key login could not be started: {exc}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise CodexExecutionError("Codex CLI API-key login timed out after 30s.") from exc
-
-        if completed.returncode != 0:
-            details = (completed.stderr or completed.stdout or "").strip()
-            raise CodexExecutionError(f"Codex CLI API-key login failed with exit code {completed.returncode}: {details[:2000]}")
-
-        marker_path.write_text(fingerprint + "\n", encoding="utf-8")
-        try:
-            os.chmod(marker_path, 0o600)
-            os.chmod(auth_path, 0o600)
-        except OSError:
-            pass
 
 
 @dataclass
@@ -16509,7 +16463,7 @@ class CodexRunner:
                 encoding="utf-8",
                 errors="replace",
                 timeout=self.timeout,
-                env=build_codex_environment(resolved),
+                env=build_codex_environment(),
             )
         except FileNotFoundError as exc:
             raise CodexExecutionError(
@@ -16540,7 +16494,7 @@ class CodexRunner:
 
 
 def build_codex_exec_command(resolved_codex_bin: str, schema_path: str) -> list[str]:
-    return [
+    cmd = [
         resolved_codex_bin,
         "--ask-for-approval",
         "never",
@@ -16551,8 +16505,12 @@ def build_codex_exec_command(resolved_codex_bin: str, schema_path: str) -> list[
         "--skip-git-repo-check",
         "--output-schema",
         schema_path,
-        "-",
     ]
+    model = configured_codex_model()
+    if model:
+        cmd.extend(["-m", model])
+    cmd.append("-")
+    return cmd
 
 
 def resolve_codex_binary(codex_bin: str) -> str:

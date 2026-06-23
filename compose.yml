@@ -20,12 +20,14 @@ services:
       LEM_TTS_LOG_PATH: /app/logs/lemko_tts_log.csv
       VOCAB_JSON_DIR: /app/vocab_json
       LEM_TRANSLATE_PROVIDER: codex
+      LEM_TRANSLATE_CODEX_MODEL: gpt-5.5
       LEM_SEARCH_LLM_PROVIDER: codex
       CODEX_CLI_PATH: /usr/local/bin/codex
       CODEX_AUTH_DIR: /run/codex-auth
       CODEX_CLI_TIMEOUT_SECONDS: "900"
       PL_LEM_TRANSLATE_API_BASE: http://127.0.0.1:8000
       PL_LEM_TRANSLATE_CODEX_BIN: /usr/local/bin/codex
+      PL_LEM_TRANSLATE_CODEX_MODEL: gpt-5.5
       PL_LEM_TRANSLATE_RULES_DIR: /app/docs/structured_rules
       PL_LEM_TRANSLATE_CODEX_TIMEOUT_SECONDS: "900"
     ports:
