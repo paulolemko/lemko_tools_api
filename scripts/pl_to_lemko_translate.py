@@ -29106,7 +29106,7 @@ def translate_text(
         ),
         "memory_risk_policy": normalized_memory_risk_policy,
         "document_profiled_postprocessing": document_profiled_postprocessing,
-        "model": "codex-cli-default",
+        "model": configured_codex_model(),
         "attempts": len(chunks),
         "chunks": chunk_payloads,
     }
